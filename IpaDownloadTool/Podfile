@@ -1,0 +1,8 @@
+platform :ios, '9.0'
+target 'IpaDownloadTool' do
+  pod 'FMDB'
+  pod 'SDWebImage'
+  pod 'ZXDataHandle'
+  pod 'AFNetworking'
+  pod 'SSZipArchive'
+end 
