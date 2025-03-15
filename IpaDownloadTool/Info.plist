@@ -65,5 +65,11 @@
 	</array>
 	<key>UIUserInterfaceStyle</key>
 	<string>Light</string>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>NSUbiquitousContainerIsDocumentScopePublic</key>
+	<true/>
 </dict>
 </plist>

@@ -2,13 +2,16 @@
 //  ZXIpaImportVC.h
 //  IpaDownloadTool
 //
-//  Created by mantou on 2025/3/14.
-//  Copyright © 2025 李兆祥. All rights reserved.
+//  Created on 2023/3/15.
+//  Copyright © 2023. All rights reserved.
 //
 
-#ifndef ZXIpaImportVC_h
-#define ZXIpaImportVC_h
+#import <UIKit/UIKit.h>
 
-#include <stdio.h>
+NS_ASSUME_NONNULL_BEGIN
 
-#endif /* ZXIpaImportVC_h */
+@interface ZXIpaImportVC : UIViewController
+
+@end
+
+NS_ASSUME_NONNULL_END 

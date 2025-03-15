@@ -29,6 +29,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (copy, nonatomic) NSString *sign;
 ///ipa保存本地地址
 @property (copy, nonatomic) NSString *localPath;
+///是否已签名
+@property (assign, nonatomic) BOOL isSigned;
+///签名时间
+@property (copy, nonatomic) NSString *signedTime;
 -(instancetype)initWithDic:(NSDictionary *)dic;
 @end
 

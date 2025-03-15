@@ -8,6 +8,7 @@
 
 #import "ZXFileManage.h"
 #import "ZXDataHandle.h"
+#import "SSZipArchive.h"
 
 #define ExtentDocPath(pathComponent) [NSString stringWithFormat:@"%@/%@",ZXDocPath,pathComponent]
 @interface ZXFileManage()
@@ -111,17 +112,13 @@
         [self creatDirWithPath:destination];
     }
     
-    // 由于我们计划使用SSZipArchive库，但是它可能还没有安装
-    // 暂时使用一个简单的解决方案：将IPA文件复制到目标位置
-    // 注意：这不是真正的解压，在实际项目中，添加SSZipArchive库后，应该使用它的方法
-    // [SSZipArchive unzipFileAtPath:path toDestination:destination];
-    
-    // 临时的解决方案：在导入IPA后，直接读取外部程序解压的内容
-    NSLog(@"需要使用SSZipArchive库来解压文件");
-    NSLog(@"将IPA从%@复制到%@", path, destination);
-    
-    // 为了项目能够继续运行，我们暂时返回YES
-    // 在实际运行前，需要执行pod install安装SSZipArchive，并取消下面的注释
-    return YES;
+    // 使用SSZipArchive解压文件
+    if (NSClassFromString(@"SSZipArchive")) {
+        NSLog(@"使用SSZipArchive解压文件: %@ -> %@", path, destination);
+        return [SSZipArchive unzipFileAtPath:path toDestination:destination];
+    } else {
+        NSLog(@"SSZipArchive库不可用，无法解压文件");
+        return NO;
+    }
 }
 @end
