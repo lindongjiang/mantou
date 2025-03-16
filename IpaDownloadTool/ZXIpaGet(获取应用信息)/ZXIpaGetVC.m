@@ -51,6 +51,12 @@ typedef enum {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    
+    // 检查IBOutlet是否已连接
+    if (!self.webView) {
+        NSLog(@"[错误] webView未连接，请检查IBOutlet连接");
+    }
+    
     if([[NSUserDefaults standardUserDefaults]objectForKey:@"userAgreementAgreed"]){
         [self initUI];
     }else{
@@ -91,7 +97,15 @@ typedef enum {
 }
 
 - (void)dealloc{
-    [(WKWebView *)self.view removeObserver:self forKeyPath:@"estimatedProgress"];
+    @try {
+        [self.webView removeObserver:self forKeyPath:@"estimatedProgress"];
+    } @catch (NSException *exception) {
+        NSLog(@"[警告] 移除KVO观察者失败: %@", exception.reason);
+    }
+    
+    // 停止网络监听
+    [[AFNetworkReachabilityManager sharedManager] setReachabilityStatusChangeBlock:nil];
+    [[AFNetworkReachabilityManager sharedManager] stopMonitoring];
 }
 
 #pragma mark - 初始化视图
@@ -164,7 +178,13 @@ typedef enum {
     layer.backgroundColor = [MainColor CGColor];
     [progress.layer addSublayer:layer];
     self.progressLayer = layer;
-    [self.webView addObserver:self forKeyPath:@"estimatedProgress" options:NSKeyValueObservingOptionNew context:nil];
+    
+    // 确保webView已经初始化后再添加KVO
+    if (self.webView) {
+        [self.webView addObserver:self forKeyPath:@"estimatedProgress" options:NSKeyValueObservingOptionNew context:nil];
+    } else {
+        NSLog(@"[警告] webView未初始化，无法添加KVO观察者");
+    }
 }
 
 #pragma mark - Actions
@@ -357,7 +377,25 @@ typedef enum {
                 if(!urlStrWithoutQuery || !urlStrWithoutQuery.length){
                     urlStrWithoutQuery = urlStr;
                 }
-                ipaModel.title = [[[urlStrWithoutQuery lastPathComponent] stringByDeletingPathExtension] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+                
+                // 安全地设置title，避免解码失败导致nil
+                NSString *decodedTitle = nil;
+                @try {
+                    decodedTitle = [[[urlStrWithoutQuery lastPathComponent] stringByDeletingPathExtension] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+                } @catch (NSException *exception) {
+                    NSLog(@"[解码] 解码URL失败: %@", exception.reason);
+                    decodedTitle = nil;
+                }
+                
+                if (!decodedTitle) {
+                    // 如果解码失败，尝试直接使用未解码的路径
+                    decodedTitle = [[urlStrWithoutQuery lastPathComponent] stringByDeletingPathExtension];
+                    if (!decodedTitle || [decodedTitle length] == 0) {
+                        decodedTitle = @"未知应用";
+                    }
+                }
+                
+                ipaModel.title = decodedTitle;
                 ipaModel.downloadUrl = urlStr;
                 ipaModel.sign = [ipaModel.downloadUrl md5Str];
                 [self saveIpaModel:ipaModel];
@@ -510,6 +548,12 @@ typedef enum {
 
 #pragma mark 保存ipaModel
 -(void)saveIpaModel:(ZXIpaModel *)ipaModel{
+    // 确保title不为nil
+    if (!ipaModel.title || [ipaModel.title length] == 0) {
+        NSLog(@"[保存] 警告: IPA标题为空，设置为默认标题");
+        ipaModel.title = @"未知应用";
+    }
+    
     NSArray *sameArr = [ZXIpaModel zx_dbQuaryWhere:[NSString stringWithFormat:@"sign='%@'",ipaModel.sign]];
     ipaModel.localPath = [sameArr.firstObject valueForKey:@"localPath"];
     if(sameArr.count){
@@ -555,11 +599,31 @@ typedef enum {
         urlStr = [@"http://" stringByAppendingString:urlStr];
     }
     _urlStr = urlStr;
-    NSURL *url = [NSURL URLWithString:(NSString *)CFBridgingRelease(CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, (CFStringRef)urlStr, (CFStringRef)@"!$&'()*+,-./:;=?@_~%#[]", NULL,kCFStringEncodingUTF8))];
+    
+    // 使用更安全的URL编码方式
+    NSString *encodedUrlStr = nil;
+    @try {
+        // 先尝试使用现代API
+        encodedUrlStr = [urlStr stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+    } @catch (NSException *exception) {
+        NSLog(@"[警告] 现代URL编码失败: %@", exception.reason);
+        // 如果失败，回退到旧API
+        encodedUrlStr = (NSString *)CFBridgingRelease(CFURLCreateStringByAddingPercentEscapes(
+            kCFAllocatorDefault,
+            (CFStringRef)urlStr,
+            (CFStringRef)@"!$&'()*+,-./:;=?@_~%#[]",
+            NULL,
+            kCFStringEncodingUTF8
+        ));
+    }
+    
+    NSURL *url = [NSURL URLWithString:encodedUrlStr];
     if(!url){
         self.title = @"URL无效";
+        NSLog(@"[错误] 无法创建URL: %@", urlStr);
         return;
     }
+    
     NSURLRequest *req = [NSURLRequest requestWithURL:url];
     [self.webView loadRequest:req];
     if(shouldCache){
@@ -606,11 +670,15 @@ typedef enum {
 }
 
 - (void)addReachabilityMonitoring{
+    __weak typeof(self) weakSelf = self;
     [[AFNetworkReachabilityManager sharedManager] setReachabilityStatusChangeBlock:^(AFNetworkReachabilityStatus status) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        
         if (status != AFNetworkReachabilityStatusNotReachable) {
-            [self updateMobileprovisionRegulaArr];
+            [strongSelf updateMobileprovisionRegulaArr];
         } else {
-            [self showAlertWithTitle:@"提示" message:@"网络错误，请检查网络设置"];
+            [strongSelf showAlertWithTitle:@"提示" message:@"网络错误，请检查网络设置"];
         }
     }];
     

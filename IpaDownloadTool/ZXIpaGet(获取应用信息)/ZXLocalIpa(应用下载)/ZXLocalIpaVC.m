@@ -41,12 +41,15 @@ typedef enum {
     [self.segView zx_obsKey:@"selectedSegmentIndex" handler:^(id newData, id oldData, id owner) {
         weakSelf.downloadType = [newData boolValue];
     }];
-    if(self.ipaModel){
-        [self startDownload];
+    
+    // 如果有IPA模型但没有通过startDownloadWithIpaModel方法设置，则启动下载
+    if(self.ipaModel && !self.downloadingModel){
+        [self startDownloadWithIpaModel:self.ipaModel];
     }else{
         [self.segView setSelectedSegmentIndex:1];
         [self setDownloadedData];
     }
+    
     self.segView.tintColor = MainColor;
     self.tableView.zx_setCellClassAtIndexPath = ^Class(NSIndexPath *indexPath) {
         return [ZXLocalIpaDownloadCell class];
@@ -74,24 +77,30 @@ typedef enum {
     self.downloadType = (BOOL)self.segView.selectedSegmentIndex;
     [self removePlaceView];
     [self.tableView.zxDatas removeAllObjects];
+    
     if(self.downloadType == DownloadTypeDownloaded){
         [self setDownloadedData];
     }else{
-        if(!self.downloadingModel || self.downloadingModel.totalBytesExpectedToWrite == 0 || self.downloadingModel.isFinish){
-            [self showPlaceViewWithText:@"暂无下载中的文件"];
-        }else{
+        // 如果有正在下载的任务，显示下载任务
+        if(self.downloadingModel && !self.downloadingModel.isFinish){
             [self.tableView.zxDatas addObject:self.downloadingModel];
+            [self.tableView reloadData];
+            [self removePlaceView];
+        }else{
+            [self showPlaceViewWithText:@"暂无下载中的文件"];
         }
     }
-    [self.tableView reloadData];
 }
 
 #pragma mark - Private
 #pragma mark 开始下载
 -(void)startDownload{
-    if(self.ipaModel && self.downloadType == DownloadTypeDownloading){
-        [self.tableView.zxDatas addObject:self.downloadingModel];;
-    }
+    // 移除注释掉的代码，确保不会重复添加下载模型
+    // if(self.ipaModel && self.downloadType == DownloadTypeDownloading){
+    //     [self.tableView.zxDatas addObject:self.downloadingModel];
+    // }
+    
+    NSLog(@"[ZXLocalIpaVC] 开始下载任务: %@", self.ipaModel.downloadUrl);
     self.fileDownload = [[ZXFileDownload alloc]init];
     __weak __typeof(self) weakSelf = self;
     self.downloadConnection = [self.fileDownload downLoadWithUrlStrByURLConnection:self.ipaModel.downloadUrl filePath:self.downloadingModel.localPath callBack:^(BOOL result, int64_t totalBytesWritten, int64_t totalBytesExpectedToWrite, NSString * _Nonnull path) {
@@ -144,6 +153,37 @@ typedef enum {
     }
 }
 
+#pragma mark 设置下载中数据
+-(void)setDownloadingData{
+    [self.tableView.zxDatas removeAllObjects];
+    
+    // 如果有当前正在下载的模型，添加到列表
+    if (self.downloadingModel && !self.downloadingModel.isFinish) {
+        // 检查是否已经存在相同的下载任务
+        BOOL alreadyExists = NO;
+        for (ZXLocalIpaDownloadModel *model in self.tableView.zxDatas) {
+            if ([model.sign isEqualToString:self.downloadingModel.sign]) {
+                alreadyExists = YES;
+                break;
+            }
+        }
+        
+        if (!alreadyExists) {
+            [self.tableView.zxDatas addObject:self.downloadingModel];
+        }
+    }
+    
+    [self.tableView reloadData];
+    
+    if (!self.tableView.zxDatas.count) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self showPlaceViewWithText:@"暂无下载中的文件"];
+        });
+    } else {
+        [self removePlaceView];
+    }
+}
+
 #pragma mark 控制器pop时显示提示信息
 -(BOOL)showBlockNotice{
     if(self.ipaModel && self.downloadingModel && !self.downloadingModel.isFinish){
@@ -188,6 +228,90 @@ typedef enum {
         _downloadingModel.localPath = self.ipaModel.localPath;
     }
     return _downloadingModel;
+}
+
+#pragma mark - Public Methods
+
+// 刷新数据
+- (void)refreshData {
+    // 根据当前选中的分段控件刷新相应的数据
+    if (self.downloadType == DownloadTypeDownloading) {
+        // 刷新下载中的数据
+        [self setDownloadingData];
+    } else {
+        // 刷新已下载的数据
+        [self setDownloadedData];
+    }
+}
+
+// 开始下载IPA
+- (void)startDownloadWithIpaModel:(ZXIpaModel *)ipaModel {
+    NSLog(@"[ZXLocalIpaVC] 开始下载IPA: %@, URL: %@", ipaModel.title, ipaModel.downloadUrl);
+    
+    // 检查是否已经存在相同的下载任务
+    if (self.downloadingModel && 
+        !self.downloadingModel.isFinish && 
+        [self.downloadingModel.sign isEqualToString:ipaModel.sign]) {
+        NSLog(@"[ZXLocalIpaVC] 已存在相同的下载任务，不重复添加");
+        
+        // 切换到下载中标签
+        self.segView.selectedSegmentIndex = DownloadTypeDownloading;
+        self.downloadType = DownloadTypeDownloading;
+        
+        // 刷新下载中数据
+        [self setDownloadingData];
+        return;
+    }
+    
+    // 保存IPA模型
+    self.ipaModel = ipaModel;
+    
+    // 切换到下载中标签
+    self.segView.selectedSegmentIndex = DownloadTypeDownloading;
+    self.downloadType = DownloadTypeDownloading;
+    
+    // 清除旧数据
+    [self.tableView.zxDatas removeAllObjects];
+    
+    // 创建下载模型
+    self.downloadingModel = [[ZXLocalIpaDownloadModel alloc] init];
+    self.downloadingModel.downloadUrl = ipaModel.downloadUrl;
+    
+    if (ipaModel.version) {
+        self.downloadingModel.title = [NSString stringWithFormat:@"%@(v%@).ipa", ipaModel.title, ipaModel.version];
+    } else {
+        self.downloadingModel.title = [NSString stringWithFormat:@"%@.ipa", ipaModel.title];
+    }
+    
+    self.downloadingModel.sign = ipaModel.sign;
+    self.downloadingModel.localPath = ipaModel.localPath;
+    self.downloadingModel.finish = NO;
+    
+    // 添加到表格数据
+    [self.tableView.zxDatas addObject:self.downloadingModel];
+    [self.tableView reloadData];
+    
+    // 开始下载
+    [self startDownload];
+    
+    // 移除占位视图
+    [self removePlaceView];
+}
+
+// 重写setIpaModel方法，使用startDownloadWithIpaModel方法处理
+- (void)setIpaModel:(ZXIpaModel *)ipaModel {
+    // 如果已经有相同的下载任务，不重复添加
+    if (_ipaModel && [_ipaModel.sign isEqualToString:ipaModel.sign]) {
+        NSLog(@"[ZXLocalIpaVC] 已存在相同的下载任务，不重复添加");
+        return;
+    }
+    
+    _ipaModel = ipaModel;
+    
+    // 如果已经加载视图，则开始下载
+    if (self.isViewLoaded) {
+        [self startDownloadWithIpaModel:ipaModel];
+    }
 }
 
 @end

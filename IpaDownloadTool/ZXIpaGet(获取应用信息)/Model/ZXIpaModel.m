@@ -14,25 +14,30 @@
 
 -(instancetype)initWithDic:(NSDictionary *)dic{
     if(self = [super init]){
-        NSDictionary *item = dic[@"items"][0];
-        NSArray *assets = item[@"assets"];
-        NSDictionary *metadata = item[@"metadata"];
-        for (NSDictionary *asset in assets) {
-            NSString *kind = asset[@"kind"];
-            if([kind isEqualToString:@"software-package"]){
-                self.downloadUrl = asset[@"url"];
-            }
-            if([kind isEqualToString:@"display-image"]){
-                self.iconUrl = asset[@"url"];
-            }
-        }
-        self.bundleId = metadata[@"bundle-identifier"];
-        self.version = metadata[@"bundle-version"];
-        self.title = metadata[@"title"];
+        NSDictionary *itemsDic = dic[@"items"][0];
+        NSDictionary *metadataDic = itemsDic[@"metadata"];
+        NSDictionary *assetsDic = itemsDic[@"assets"][0];
         
-        NSString *orgSign = [NSString stringWithFormat:@"%@%@%@",self.bundleId,self.version,self.fromPageUrl];
-        NSString *sign = [orgSign md5Str];
-        self.sign = sign;
+        // 确保title不为nil
+        NSString *title = metadataDic[@"title"];
+        if (!title || [title length] == 0) {
+            title = @"未知应用";
+        }
+        self.title = title;
+        
+        self.bundleId = metadataDic[@"bundle-identifier"];
+        self.version = metadataDic[@"bundle-version"];
+        self.iconUrl = metadataDic[@"icon-url"];
+        self.downloadUrl = assetsDic[@"url"];
+        self.sign = [self.downloadUrl md5Str];
+        
+        NSDate *date = [NSDate date];
+        NSDateFormatter *format = [[NSDateFormatter alloc] init];
+        [format setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
+        self.time = [format stringFromDate:date];
+        
+        NSString *fileName = [NSString stringWithFormat:@"%@.ipa",self.title];
+        self.localPath = [ZXIpaDownloadedPath stringByAppendingPathComponent:fileName];
     }
     return self;
 }

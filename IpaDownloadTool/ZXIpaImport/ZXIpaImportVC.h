@@ -8,6 +8,7 @@
 
 #import <UIKit/UIKit.h>
 #import "ZXCertificateManageVC.h"
+#import "ZXIpaModel.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -19,6 +20,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 // 导入IPA文件
 - (void)importIpaFile;
+
+// 从历史记录导入IPA模型
+- (void)importIpaWithModel:(ZXIpaModel *)ipaModel;
 
 // 显示和隐藏空视图
 - (void)showEmptyView;

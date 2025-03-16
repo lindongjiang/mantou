@@ -12,6 +12,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface ZXLocalIpaVC : UIViewController
 @property (strong, nonatomic) ZXIpaModel *ipaModel;
+
+// 刷新数据
+- (void)refreshData;
+
+// 开始下载IPA
+- (void)startDownloadWithIpaModel:(ZXIpaModel *)ipaModel;
 @end
 
 NS_ASSUME_NONNULL_END

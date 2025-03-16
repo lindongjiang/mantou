@@ -11,6 +11,8 @@
 #import "ZXIpaModel.h"
 
 #import "ZXIpaDetailVC.h"
+#import "ZXIpaImportVC.h"
+
 typedef enum {
     SortTimeDesc = 0x00,    // 按照时间降序排列
     SortFileNameAsc = 0x01,    // 按照文件名升序排列
@@ -44,13 +46,25 @@ typedef enum {
         [weakSelf.navigationController pushViewController:VC animated:YES];
     };
     self.tableView.zx_editActionsForRowAtIndexPath = ^NSArray<UITableViewRowAction *> *(NSIndexPath *indexPath) {
-        UITableViewRowAction *delAction = [UITableViewRowAction rowActionWithStyle:UITableViewRowActionStyleDestructive title:@"删除" handler:^(UITableViewRowAction * _Nonnull action, NSIndexPath * _Nonnull indexPath) {
-            ZXIpaModel *delModel = weakSelf.tableView.zxDatas[indexPath.row];
-            [ZXFileManage delFileWithPath:delModel.localPath];
-            [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"sign='%@'",delModel.sign]];
-            [weakSelf setTbData];
+        ZXIpaModel *ipaModel = weakSelf.tableView.zxDatas[indexPath.row];
+        
+        // 删除操作
+        UITableViewRowAction *deleteAction = [UITableViewRowAction rowActionWithStyle:UITableViewRowActionStyleDestructive title:@"删除" handler:^(UITableViewRowAction * _Nonnull action, NSIndexPath * _Nonnull indexPath) {
+            [weakSelf deleteIpaAtIndexPath:indexPath];
         }];
-        return @[delAction];
+        
+        // 导入到IPA导入页面操作
+        UITableViewRowAction *importAction = [UITableViewRowAction rowActionWithStyle:UITableViewRowActionStyleNormal title:@"导入" handler:^(UITableViewRowAction * _Nonnull action, NSIndexPath * _Nonnull indexPath) {
+            [weakSelf importIpaToImportPage:ipaModel];
+        }];
+        importAction.backgroundColor = [UIColor systemBlueColor];
+        
+        // 如果是已签名的IPA，不显示导入操作
+        if (ipaModel.isSigned) {
+            return @[deleteAction];
+        } else {
+            return @[deleteAction, importAction];
+        }
     };
 }
 #pragma mark - Actions
@@ -125,5 +139,38 @@ typedef enum {
 -(void)viewWillAppear:(BOOL)animated{
     [super viewWillAppear:animated];
     [self setTbData];
+}
+
+// 删除IPA
+- (void)deleteIpaAtIndexPath:(NSIndexPath *)indexPath {
+    ZXIpaModel *delModel = self.tableView.zxDatas[indexPath.row];
+    [ZXFileManage delFileWithPath:delModel.localPath];
+    [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"sign='%@'",delModel.sign]];
+    [self setTbData];
+}
+
+// 导入IPA到导入页面
+- (void)importIpaToImportPage:(ZXIpaModel *)ipaModel {
+    // 检查文件是否存在
+    if (!ipaModel.localPath || ![ZXFileManage fileExistWithPath:ipaModel.localPath]) {
+        [ALToastView showToastWithText:@"IPA文件不存在或已被删除"];
+        return;
+    }
+    
+    // 切换到导入页面并传递IPA模型
+    UITabBarController *tabBarController = self.tabBarController;
+    if (tabBarController) {
+        // 切换到导入页面（索引为1）
+        tabBarController.selectedIndex = 1;
+        
+        // 获取导入页面的导航控制器和根视图控制器
+        UINavigationController *navController = tabBarController.viewControllers[1];
+        ZXIpaImportVC *importVC = (ZXIpaImportVC *)navController.viewControllers.firstObject;
+        
+        // 调用导入方法
+        if ([importVC respondsToSelector:@selector(importIpaWithModel:)]) {
+            [importVC performSelector:@selector(importIpaWithModel:) withObject:ipaModel];
+        }
+    }
 }
 @end

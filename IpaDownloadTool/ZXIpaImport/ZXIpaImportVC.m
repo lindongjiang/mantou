@@ -1,6 +1,9 @@
 #import "ZXIpaImportVC.h"
 #import "ZXFileManage.h"
 #import "ZXIpaModel.h"
+#import "ZXIpaCell.h"
+#import "ZXIpaDetailVC.h"
+#import "ZXIpaManager.h"
 #import <objc/runtime.h>
 #import "NSString+ZXMD5.h"
 #import "SSZipArchive.h"
@@ -8,6 +11,7 @@
 #import "ZXCertificateManageVC.h"
 #import "MBProgressHUD.h"
 #import "ALToastView.h"
+#import <FMDB/FMDB.h>
 
 @implementation ZXIpaImportVC
 
@@ -65,18 +69,18 @@
                     NSError *removeError = nil;
                     if (![[NSFileManager defaultManager] removeItemAtPath:destinationPath error:&removeError]) {
                         NSLog(@"删除已存在的文件失败: %@", removeError.localizedDescription);
-                        continue;
-                    }
+                    continue;
+                }
                 }
                 
                 // 复制文件到导入目录
                 NSError *copyError = nil;
                 if ([[NSFileManager defaultManager] copyItemAtURL:url toURL:[NSURL fileURLWithPath:destinationPath] error:&copyError]) {
-                    NSLog(@"成功导入文件到: %@", destinationPath);
-                    
-                    // 解析IPA文件
-                    ZXIpaModel *ipaModel = [self parseIpaFile:destinationPath];
-                    if (ipaModel) {
+                NSLog(@"成功导入文件到: %@", destinationPath);
+                
+                // 解析IPA文件
+                ZXIpaModel *ipaModel = [self parseIpaFile:destinationPath];
+                if (ipaModel) {
                         // 确保设置正确的本地路径
                         ipaModel.localPath = destinationPath;
                         NSLog(@"设置IPA文件本地路径为: %@", destinationPath);
@@ -94,10 +98,10 @@
                         // 确保设置了时间
                         if (!ipaModel.time || [ipaModel.time isEqualToString:@"未知日期"]) {
                             ipaModel.time = [self currentTimeString];
-                        }
-                        
-                        // 保存到数据库
-                        [self saveIpaInfoToDatabase:ipaModel];
+                    }
+                    
+                    // 保存到数据库
+                    [self saveIpaInfoToDatabase:ipaModel];
                         
                         // 缓存文件大小
                         NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:destinationPath error:nil];
@@ -117,11 +121,11 @@
                                 [self hideEmptyView];
                             }
                         });
-                        
-                        NSLog(@"成功解析并保存IPA信息: %@", ipaModel.title);
-                    } else {
+                    
+                    NSLog(@"成功解析并保存IPA信息: %@", ipaModel.title);
+                } else {
                         NSLog(@"解析IPA文件失败");
-                    }
+                }
                 } else {
                     NSLog(@"复制文件失败: %@", copyError.localizedDescription);
                 }
@@ -129,9 +133,9 @@
                 // 停止访问安全资源
                 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
                 if (@available(iOS 11.0, *)) {
-                    if (securityAccessGranted) {
-                        [url stopAccessingSecurityScopedResource];
-                    }
+                if (securityAccessGranted) {
+                    [url stopAccessingSecurityScopedResource];
+                }
                 }
                 #endif
             }
@@ -229,43 +233,43 @@
         }
         
         // 处理每个数据库记录
-        for (ZXIpaModel *ipaModel in dbIpaModels) {
-            // 检查是否是直接引用的外部文件
-            BOOL isExternalFile = [ipaModel.bundleId hasPrefix:@"direct."];
+    for (ZXIpaModel *ipaModel in dbIpaModels) {
+        // 检查是否是直接引用的外部文件
+        BOOL isExternalFile = [ipaModel.bundleId hasPrefix:@"direct."];
+        
+        if (isExternalFile) {
+            NSLog(@"[加载] 处理外部文件记录: %@", ipaModel.bundleId);
+            // 从NSUserDefaults获取书签数据
+            NSString *bookmarkKey = [NSString stringWithFormat:@"bookmark_%@", ipaModel.bundleId];
+            NSData *bookmarkData = [[NSUserDefaults standardUserDefaults] objectForKey:bookmarkKey];
             
-            if (isExternalFile) {
-                NSLog(@"[加载] 处理外部文件记录: %@", ipaModel.bundleId);
-                // 从NSUserDefaults获取书签数据
-                NSString *bookmarkKey = [NSString stringWithFormat:@"bookmark_%@", ipaModel.bundleId];
-                NSData *bookmarkData = [[NSUserDefaults standardUserDefaults] objectForKey:bookmarkKey];
+            if (bookmarkData) {
+                NSLog(@"[加载] 尝试恢复书签: %@", bookmarkKey);
                 
-                if (bookmarkData) {
-                    NSLog(@"[加载] 尝试恢复书签: %@", bookmarkKey);
-                    
-                    NSError *bookmarkError = nil;
-                    BOOL stale = NO;
-                    NSURL *fileURL = [NSURL URLByResolvingBookmarkData:bookmarkData
+                NSError *bookmarkError = nil;
+                BOOL stale = NO;
+                NSURL *fileURL = [NSURL URLByResolvingBookmarkData:bookmarkData
                                                               options:NSURLBookmarkResolutionWithoutUI
-                                                        relativeToURL:nil
-                                                  bookmarkDataIsStale:&stale
-                                                                error:&bookmarkError];
-                    
-                    if (bookmarkError) {
-                        NSLog(@"[加载] 解析书签失败: %@", bookmarkError.localizedDescription);
-                        // 删除无效的书签和数据库记录
-                        [[NSUserDefaults standardUserDefaults] removeObjectForKey:bookmarkKey];
-                        [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
-                        continue;
-                    }
-                    
-                    if (stale) {
-                        NSLog(@"[加载] 书签已过期，需要更新");
-                        // 此处可以尝试更新书签，但通常会失败，因为需要用户重新授权
-                        [[NSUserDefaults standardUserDefaults] removeObjectForKey:bookmarkKey];
-                        [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
-                        continue;
-                    }
-                    
+                                                    relativeToURL:nil
+                                              bookmarkDataIsStale:&stale
+                                                            error:&bookmarkError];
+                
+                if (bookmarkError) {
+                    NSLog(@"[加载] 解析书签失败: %@", bookmarkError.localizedDescription);
+                    // 删除无效的书签和数据库记录
+                    [[NSUserDefaults standardUserDefaults] removeObjectForKey:bookmarkKey];
+                    [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
+                    continue;
+                }
+                
+                if (stale) {
+                    NSLog(@"[加载] 书签已过期，需要更新");
+                    // 此处可以尝试更新书签，但通常会失败，因为需要用户重新授权
+                    [[NSUserDefaults standardUserDefaults] removeObjectForKey:bookmarkKey];
+                    [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
+                    continue;
+                }
+                
                     BOOL accessGranted = NO;
                     
                     #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
@@ -273,32 +277,32 @@
                         accessGranted = [fileURL startAccessingSecurityScopedResource];
                     }
                     #endif
-                    
-                    @try {
-                        if (accessGranted) {
-                            NSString *path = [fileURL path];
-                            NSLog(@"[加载] 成功访问外部文件: %@", path);
+                
+                @try {
+                    if (accessGranted) {
+                        NSString *path = [fileURL path];
+                        NSLog(@"[加载] 成功访问外部文件: %@", path);
+                        
+                        // 检查文件是否仍然存在
+                        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+                            NSLog(@"[加载] 外部文件仍然存在，添加到列表");
                             
-                            // 检查文件是否仍然存在
-                            if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-                                NSLog(@"[加载] 外部文件仍然存在，添加到列表");
-                                
-                                // 更新文件路径（以防万一）
-                                ipaModel.localPath = path;
-                                ipaModel.downloadUrl = [fileURL absoluteString];
-                                
+                            // 更新文件路径（以防万一）
+                            ipaModel.localPath = path;
+                            ipaModel.downloadUrl = [fileURL absoluteString];
+                            
                                 // 从缓存中获取文件大小
                                 NSString *fileSizeKey = [NSString stringWithFormat:@"fileSize_%@", ipaModel.sign];
                                 NSString *sizeStr = [[NSUserDefaults standardUserDefaults] objectForKey:fileSizeKey];
                                 
                                 if (!sizeStr) {
                                     // 如果缓存中没有，重新获取文件大小
-                                    NSError *attributesError = nil;
-                                    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:&attributesError];
-                                    
-                                    if (!attributesError && attributes) {
-                                        // 更新文件大小信息
-                                        long long fileSize = [attributes fileSize];
+                            NSError *attributesError = nil;
+                            NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:&attributesError];
+                            
+                            if (!attributesError && attributes) {
+                                // 更新文件大小信息
+                                long long fileSize = [attributes fileSize];
                                         sizeStr = [self formatFileSize:fileSize];
                                         
                                         // 缓存文件大小
@@ -309,33 +313,33 @@
                                 
                                 // 在自定义属性中存储文件大小字符串
                                 objc_setAssociatedObject(ipaModel, "fileSize", sizeStr, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                                
-                                [self.ipaList addObject:ipaModel];
-                            } else {
-                                NSLog(@"[加载] 外部文件不再存在，删除书签和数据库记录");
-                                [[NSUserDefaults standardUserDefaults] removeObjectForKey:bookmarkKey];
-                                [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
-                            }
+                            
+                            [self.ipaList addObject:ipaModel];
+                        } else {
+                            NSLog(@"[加载] 外部文件不再存在，删除书签和数据库记录");
+                            [[NSUserDefaults standardUserDefaults] removeObjectForKey:bookmarkKey];
+                            [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
                         }
-                    } @catch (NSException *exception) {
-                        NSLog(@"[加载] 处理书签时发生异常: %@", exception);
-                    } @finally {
+                    }
+                } @catch (NSException *exception) {
+                    NSLog(@"[加载] 处理书签时发生异常: %@", exception);
+                } @finally {
                         #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
                         if (@available(iOS 11.0, *)) {
-                            if (accessGranted) {
-                                [fileURL stopAccessingSecurityScopedResource];
-                            }
+                    if (accessGranted) {
+                        [fileURL stopAccessingSecurityScopedResource];
+                    }
                         }
                         #endif
-                    }
-                } else {
-                    NSLog(@"[加载] 未找到书签数据，从数据库中删除记录");
-                    [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
                 }
             } else {
-                // 处理复制到沙盒的IPA文件
-                NSLog(@"[加载] 处理本地IPA文件: %@, 路径: %@", ipaModel.title, ipaModel.localPath);
-                
+                NSLog(@"[加载] 未找到书签数据，从数据库中删除记录");
+                [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
+            }
+        } else {
+            // 处理复制到沙盒的IPA文件
+            NSLog(@"[加载] 处理本地IPA文件: %@, 路径: %@", ipaModel.title, ipaModel.localPath);
+            
                 BOOL fileExists = [ZXFileManage fileExistWithPath:ipaModel.localPath];
                 
                 if (!fileExists) {
@@ -370,8 +374,8 @@
                 }
                 
                 if (fileExists) {
-                    // 文件存在，添加到列表
-                    NSLog(@"[加载] 文件存在，添加到列表");
+                // 文件存在，添加到列表
+                NSLog(@"[加载] 文件存在，添加到列表");
                     
                     // 从缓存中获取文件大小
                     NSString *fileSizeKey = [NSString stringWithFormat:@"fileSize_%@", ipaModel.sign];
@@ -379,10 +383,10 @@
                     
                     if (!sizeStr) {
                         // 如果缓存中没有，重新获取文件大小
-                        NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:ipaModel.localPath error:nil];
-                        if (attributes) {
-                            // 更新文件大小信息
-                            long long fileSize = [attributes fileSize];
+                NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:ipaModel.localPath error:nil];
+                if (attributes) {
+                    // 更新文件大小信息
+                    long long fileSize = [attributes fileSize];
                             sizeStr = [self formatFileSize:fileSize];
                             
                             // 缓存文件大小
@@ -393,9 +397,9 @@
                     
                     // 在自定义属性中存储文件大小字符串
                     objc_setAssociatedObject(ipaModel, "fileSize", sizeStr, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                    
-                    [self.ipaList addObject:ipaModel];
-                } else {
+                
+                [self.ipaList addObject:ipaModel];
+            } else {
                     NSLog(@"[加载] 文件不存在，但保留数据库记录以防文件在其他位置");
                     // 不再立即删除数据库记录，而是保留记录
                 }
@@ -405,7 +409,7 @@
     
     // 检查是否有ImportedIpa目录中的文件没有对应的数据库记录
     for (NSString *fileName in importedFiles) {
-        if ([fileName.pathExtension.lowercaseString isEqualToString:@"ipa"]) {
+            if ([fileName.pathExtension.lowercaseString isEqualToString:@"ipa"]) {
             NSString *fullPath = [importedIpaPath stringByAppendingPathComponent:fileName];
             
             // 检查是否已经在列表中
@@ -413,10 +417,10 @@
             for (ZXIpaModel *model in self.ipaList) {
                 if ([model.localPath isEqualToString:fullPath]) {
                     found = YES;
-                    break;
+                        break;
+                    }
                 }
-            }
-            
+                
             if (!found) {
                 NSLog(@"[加载] 发现未记录的IPA文件: %@，尝试解析并添加", fileName);
                 
@@ -451,24 +455,26 @@
         }
     }
     
-    [self.tableView reloadData];
-    
-    // 如果没有IPA文件，显示提示
-    if (self.ipaList.count == 0) {
-        [self showEmptyView];
-    } else {
-        [self hideEmptyView];
-    }
+        [self.tableView reloadData];
+        
+        // 如果没有IPA文件，显示提示
+        if (self.ipaList.count == 0) {
+            [self showEmptyView];
+        } else {
+            [self hideEmptyView];
+        }
 }
 
 #pragma mark - 解析IPA文件
 - (ZXIpaModel *)parseIpaFile:(NSString *)filePath {
     NSLog(@"[解析] 开始解析IPA文件: %@", filePath);
     
-    // 获取文件哈希值作为缓存键
+    // 获取文件名和哈希值作为缓存键
     NSString *fileName = [filePath lastPathComponent];
     NSString *fileHash = [self fileHashForPath:filePath];
     NSString *cacheKey = [NSString stringWithFormat:@"ipaCache_%@", fileHash];
+    
+    NSLog(@"[解析] 文件名: %@, 哈希值: %@", fileName, fileHash);
     
     // 检查缓存
     NSDictionary *cachedData = [[NSUserDefaults standardUserDefaults] objectForKey:cacheKey];
@@ -1079,8 +1085,8 @@
                 fileURL = resolvedURL; // 使用解析后的URL
                 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
                 if (@available(iOS 11.0, *)) {
-                    securityAccessGranted = [fileURL startAccessingSecurityScopedResource];
-                    NSLog(@"成功获取安全访问权限: %@", securityAccessGranted ? @"是" : @"否");
+                securityAccessGranted = [fileURL startAccessingSecurityScopedResource];
+                NSLog(@"成功获取安全访问权限: %@", securityAccessGranted ? @"是" : @"否");
                 }
                 #endif
             } else {
@@ -1155,9 +1161,9 @@
         // 如果是外部文件并且获取了安全访问权限，需要释放
         #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
         if (@available(iOS 11.0, *)) {
-            if (isExternalFile && securityAccessGranted) {
-                [fileURL stopAccessingSecurityScopedResource];
-            }
+        if (isExternalFile && securityAccessGranted) {
+            [fileURL stopAccessingSecurityScopedResource];
+        }
         }
         #endif
     }
@@ -1821,7 +1827,7 @@
     }
     
     NSLog(@"======文件系统状态检查完成======");
-}
+} 
 
 #pragma mark - 签名和分享IPA文件
 // 签名IPA文件
@@ -2480,8 +2486,29 @@
                     if (!jsonError && jsonResponse) {
                         // 解析响应
                         NSString *downloadUrl = jsonResponse[@"downloadUrl"] ?: jsonResponse[@"url"];
+                        NSString *installLink = jsonResponse[@"installLink"];
+                        
                         if (downloadUrl) {
                             [self downloadSignedIpa:downloadUrl withOriginalIpa:ipaModel];
+                        } else if (installLink) {
+                            NSLog(@"[签名上传大文件] 获取到安装链接: %@", installLink);
+                            // 从installLink中提取plist URL
+                            NSString *plistUrlString = nil;
+                            NSURLComponents *components = [NSURLComponents componentsWithString:installLink];
+                            for (NSURLQueryItem *item in components.queryItems) {
+                                if ([item.name isEqualToString:@"url"]) {
+                                    plistUrlString = [item.value stringByRemovingPercentEncoding];
+                                    break;
+                                }
+                            }
+                            
+                            if (plistUrlString) {
+                                NSLog(@"[签名上传大文件] 提取到plist URL: %@", plistUrlString);
+                                // 下载plist文件以获取真实的IPA下载链接
+                                [self downloadPlistAndExtractIpaUrl:plistUrlString withOriginalIpa:ipaModel];
+                            } else {
+                                [ALToastView showToastWithText:@"签名成功，但无法提取plist URL"];
+                            }
                         } else {
                             [ALToastView showToastWithText:@"签名请求已发送，请稍后检查"];
                         }
@@ -2570,26 +2597,52 @@
                     signedIpaModel.iconUrl = originalIpa.iconUrl;
                     signedIpaModel.localPath = signedFilePath;
                     signedIpaModel.time = [self currentTimeString];
-                    signedIpaModel.isSigned = YES;
+                    signedIpaModel.isSigned = YES; // 确保设置为已签名
                     signedIpaModel.signedTime = [self currentTimeString];
                     
                     // 生成唯一标识
-                    NSString *uniqueString = [NSString stringWithFormat:@"%@_%@_signed", originalIpa.bundleId, originalIpa.version];
+                    NSString *uniqueString = [NSString stringWithFormat:@"%@_%@_signed_%@", originalIpa.bundleId, originalIpa.version, [self currentTimeString]];
                     signedIpaModel.sign = [uniqueString md5Str];
                     
-                    // 保存到数据库
-                    [signedIpaModel zx_dbSave];
+                    NSLog(@"[下载] 准备保存签名后的IPA到数据库，isSigned=%d, 路径=%@", signedIpaModel.isSigned, signedIpaModel.localPath);
                     
-                    [ALToastView showToastWithText:@"签名成功，已保存到已签名IPA列表"];
+                    // 先直接保存到数据库
+                    BOOL dbSaveResult = [signedIpaModel zx_dbSave];
+                    NSLog(@"[下载] 直接保存到数据库结果: %@", dbSaveResult ? @"成功" : @"失败");
                     
-                    // 跳转到已签名IPA页面
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                        UITabBarController *tabBarController = (UITabBarController *)self.navigationController.tabBarController;
-                        if (tabBarController) {
-                            // 假设已签名IPA页面是第4个标签页（索引为3）
-                            tabBarController.selectedIndex = 3;
-                        }
-                    });
+                    // 再使用IpaManager保存已签名IPA
+                    BOOL saveResult = [[ZXIpaManager sharedManager] saveSignedIpa:signedIpaModel];
+                    
+                    if (saveResult || dbSaveResult) {
+                        NSLog(@"[下载] 签名后的IPA已成功保存到数据库");
+                        [ALToastView showToastWithText:@"签名成功，已保存到已签名IPA列表"];
+                        
+                        // 手动更新数据库中的isSigned标志
+                        NSString *updateQuery = [NSString stringWithFormat:@"UPDATE ZXIpaModel SET isSigned = 1 WHERE sign = '%@'", signedIpaModel.sign];
+                        
+                        // 获取数据库路径
+                        NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+                        NSString *dbPath = [documentsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.sqlite", [[NSBundle mainBundle] bundleIdentifier]]];
+                        
+                        FMDatabase *db = [FMDatabase databaseWithPath:dbPath];
+                        [db open];
+                        BOOL updateResult = [db executeUpdate:updateQuery];
+                        [db close];
+                        
+                        NSLog(@"[下载] 手动更新数据库中的isSigned标志: %@", updateResult ? @"成功" : @"失败");
+                        
+                        // 跳转到已签名IPA页面
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            UITabBarController *tabBarController = (UITabBarController *)self.navigationController.tabBarController;
+                            if (tabBarController) {
+                                // 切换到已签名IPA页面（索引为2）
+                                tabBarController.selectedIndex = 2;
+                            }
+                        });
+                    } else {
+                        NSLog(@"[下载] 保存签名后的IPA到数据库失败");
+                        [ALToastView showToastWithText:@"保存签名后的IPA失败"];
+                    }
                 } else {
                     NSLog(@"[下载] 保存签名后的IPA失败");
                     [ALToastView showToastWithText:@"保存签名后的IPA失败"];
@@ -3010,7 +3063,7 @@
                         // 只有一个匹配的描述文件，直接使用
                         ZXCertificateModel *profile = matchingProfiles.firstObject;
                         NSLog(@"[证书选择] 只有一个匹配的描述文件，直接使用: %@", profile.certificateName ?: profile.filename);
-                        [self performUploadWithP12:p12Cert provisionProfile:profile andIpa:ipaModel];
+                        [self startSigningWithP12:p12Cert provisionProfile:profile andIpa:ipaModel];
                     } else {
                         // 多个匹配的描述文件，显示选择器
                         NSLog(@"[证书选择] 有多个匹配的描述文件 (%lu个)，显示选择器", (unsigned long)matchingProfiles.count);
@@ -3025,7 +3078,7 @@
                                                                                     style:UIAlertActionStyleDefault
                                                                                   handler:^(UIAlertAction * _Nonnull action) {
                                 NSLog(@"[证书选择] 用户选择了描述文件: %@", profileName);
-                                [self performUploadWithP12:p12Cert provisionProfile:profile andIpa:ipaModel];
+                                [self startSigningWithP12:p12Cert provisionProfile:profile andIpa:ipaModel];
                             }];
                             [profileController addAction:profileAction];
                         }
@@ -3203,8 +3256,23 @@
                             [self downloadSignedIpa:downloadUrl withOriginalIpa:ipaModel];
                         } else if (installLink) {
                             NSLog(@"[上传] 获取到安装链接: %@", installLink);
-                            // 可以处理安装链接，比如显示二维码
-                            [ALToastView showToastWithText:@"签名成功，获取到安装链接"];
+                            // 从installLink中提取plist URL
+                            NSString *plistUrlString = nil;
+                            NSURLComponents *components = [NSURLComponents componentsWithString:installLink];
+                            for (NSURLQueryItem *item in components.queryItems) {
+                                if ([item.name isEqualToString:@"url"]) {
+                                    plistUrlString = [item.value stringByRemovingPercentEncoding];
+                                    break;
+                                }
+                            }
+                            
+                            if (plistUrlString) {
+                                NSLog(@"[上传] 提取到plist URL: %@", plistUrlString);
+                                // 下载plist文件以获取真实的IPA下载链接
+                                [self downloadPlistAndExtractIpaUrl:plistUrlString withOriginalIpa:ipaModel];
+                            } else {
+                                [ALToastView showToastWithText:@"签名成功，但无法提取plist URL"];
+                            }
                         } else {
                             [ALToastView showToastWithText:@"签名请求发送成功，请等待签名完成"];
                         }
@@ -3366,6 +3434,172 @@
     }
     
     NSLog(@"[恢复] 恢复完成，共恢复%d个文件，新增%d个文件", recoveredCount, addedCount);
+}
+
+// 修改从plist文件中提取IPA下载链接的方法
+- (void)downloadPlistAndExtractIpaUrl:(NSString *)plistUrl withOriginalIpa:(ZXIpaModel *)originalIpa {
+    NSLog(@"[下载] 开始下载plist文件: %@", plistUrl);
+    
+    // 显示加载指示器
+    MBProgressHUD *hud = [MBProgressHUD showHUDAddedTo:self.view animated:YES];
+    hud.label.text = @"正在获取签名后的IPA...";
+    hud.mode = MBProgressHUDModeIndeterminate;
+    
+    // 创建下载任务
+    NSURLSession *session = [NSURLSession sharedSession];
+    NSURLSessionDataTask *task = [session dataTaskWithURL:[NSURL URLWithString:plistUrl] completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        // 在主线程更新UI
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error) {
+                [hud hideAnimated:YES];
+                NSLog(@"[下载] 下载plist失败: %@", error.localizedDescription);
+                [ALToastView showToastWithText:@"获取签名后的IPA失败"];
+                return;
+            }
+            
+            NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+            NSLog(@"[下载] 下载plist完成，状态码: %ld", (long)httpResponse.statusCode);
+            
+            if (data) {
+                // 解析plist文件
+                NSError *plistError = nil;
+                NSDictionary *plistDict = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:&plistError];
+                
+                if (plistError) {
+                    [hud hideAnimated:YES];
+                    NSLog(@"[下载] 解析plist失败: %@", plistError.localizedDescription);
+                    [ALToastView showToastWithText:@"解析签名信息失败"];
+                    return;
+                }
+                
+                // 提取IPA下载链接
+                NSString *ipaUrl = nil;
+                
+                // 打印整个plist内容以便调试
+                NSLog(@"[下载] plist内容: %@", plistDict);
+                
+                // 尝试从items数组中提取
+                id itemsObj = plistDict[@"items"];
+                if ([itemsObj isKindOfClass:[NSArray class]]) {
+                    NSArray *items = (NSArray *)itemsObj;
+                    if (items.count > 0) {
+                        id firstItem = items[0];
+                        if ([firstItem isKindOfClass:[NSDictionary class]]) {
+                            id assetsObj = [(NSDictionary *)firstItem objectForKey:@"assets"];
+                            if ([assetsObj isKindOfClass:[NSArray class]]) {
+                                NSArray *assets = (NSArray *)assetsObj;
+                                for (id asset in assets) {
+                                    if ([asset isKindOfClass:[NSDictionary class]]) {
+                                        NSDictionary *assetDict = (NSDictionary *)asset;
+                                        NSString *kind = assetDict[@"kind"];
+                                        if ([kind isEqualToString:@"software-package"]) {
+                                            ipaUrl = assetDict[@"url"];
+                                            NSLog(@"[下载] 从plist中提取到IPA下载链接: %@", ipaUrl);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if (ipaUrl) {
+                    // 下载签名后的IPA
+                    [hud hideAnimated:YES];
+                    [self downloadSignedIpa:ipaUrl withOriginalIpa:originalIpa];
+                } else {
+                    [hud hideAnimated:YES];
+                    NSLog(@"[下载] 无法从plist中提取IPA下载链接");
+                    [ALToastView showToastWithText:@"无法获取签名后的IPA下载链接"];
+                }
+            } else {
+                [hud hideAnimated:YES];
+                [ALToastView showToastWithText:@"获取签名后的IPA失败，数据为空"];
+            }
+        });
+    }];
+    
+    // 开始下载任务
+    [task resume];
+}
+
+// 添加从历史记录导入IPA模型的方法
+- (void)importIpaWithModel:(ZXIpaModel *)ipaModel {
+    NSLog(@"[导入] 从历史记录导入IPA: %@", ipaModel.title);
+    
+    // 检查文件是否存在
+    if (!ipaModel.localPath || ![ZXFileManage fileExistWithPath:ipaModel.localPath]) {
+        [ALToastView showToastWithText:@"IPA文件不存在或已被删除"];
+        return;
+    }
+    
+    // 复制IPA文件到导入目录
+    NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *importPath = [documentsPath stringByAppendingPathComponent:@"ImportedIpa"];
+    
+    // 确保导入目录存在
+    if (![[NSFileManager defaultManager] fileExistsAtPath:importPath]) {
+        NSError *createDirError = nil;
+        [[NSFileManager defaultManager] createDirectoryAtPath:importPath withIntermediateDirectories:YES attributes:nil error:&createDirError];
+        
+        if (createDirError) {
+            NSLog(@"[导入] 创建ImportedIpa目录失败: %@", createDirError.localizedDescription);
+            [ALToastView showToastWithText:@"创建导入目录失败"];
+            return;
+        }
+    }
+    
+    // 生成新的文件名
+    NSString *fileName = [ipaModel.localPath lastPathComponent];
+    NSString *newPath = [importPath stringByAppendingPathComponent:fileName];
+    
+    // 如果目标文件已存在，先删除
+    if ([[NSFileManager defaultManager] fileExistsAtPath:newPath]) {
+        NSError *removeError = nil;
+        [[NSFileManager defaultManager] removeItemAtPath:newPath error:&removeError];
+        
+        if (removeError) {
+            NSLog(@"[导入] 删除已存在的文件失败: %@", removeError.localizedDescription);
+            [ALToastView showToastWithText:@"导入失败，无法覆盖已存在的文件"];
+            return;
+        }
+    }
+    
+    // 复制文件
+    NSError *copyError = nil;
+    [[NSFileManager defaultManager] copyItemAtPath:ipaModel.localPath toPath:newPath error:&copyError];
+    
+    if (copyError) {
+        NSLog(@"[导入] 复制文件失败: %@", copyError.localizedDescription);
+        [ALToastView showToastWithText:@"导入失败，无法复制文件"];
+        return;
+    }
+    
+    // 创建新的IPA模型
+    ZXIpaModel *newIpaModel = [[ZXIpaModel alloc] init];
+    newIpaModel.title = ipaModel.title;
+    newIpaModel.version = ipaModel.version;
+    newIpaModel.bundleId = ipaModel.bundleId;
+    newIpaModel.iconUrl = ipaModel.iconUrl;
+    newIpaModel.localPath = newPath;
+    newIpaModel.time = [self currentTimeString];
+    
+    // 生成唯一标识
+    NSString *uniqueString = [NSString stringWithFormat:@"%@_%@_imported_%@", newIpaModel.bundleId, newIpaModel.version, [self currentTimeString]];
+    newIpaModel.sign = [uniqueString md5Str];
+    
+    // 添加到列表并刷新UI
+    if (!self.ipaList) {
+        self.ipaList = [NSMutableArray array];
+    }
+    [self.ipaList addObject:newIpaModel];
+    [self.tableView reloadData];
+    
+    // 隐藏空视图
+    [self hideEmptyView];
+    
+    [ALToastView showToastWithText:@"IPA导入成功"];
 }
 
 @end

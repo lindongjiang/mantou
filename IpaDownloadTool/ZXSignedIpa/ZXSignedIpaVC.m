@@ -66,14 +66,101 @@
 #pragma mark - 数据加载
 
 - (void)loadSignedIpas {
+    NSLog(@"[已签名页面] 开始加载已签名IPA列表");
+    
     // 获取所有已签名的IPA
     self.signedIpaList = [[ZXIpaManager sharedManager] allSignedIpas];
+    
+    NSLog(@"[已签名页面] 从IpaManager获取到%lu个已签名IPA", (unsigned long)self.signedIpaList.count);
+    
+    // 检查每个IPA的状态
+    for (ZXIpaModel *ipa in self.signedIpaList) {
+        NSLog(@"[已签名页面] IPA: %@, 路径: %@, isSigned: %d, 签名时间: %@", 
+              ipa.title, ipa.localPath, ipa.isSigned, ipa.signedTime ?: @"未设置");
+        
+        // 确保isSigned标志设置正确
+        if (!ipa.isSigned) {
+            NSLog(@"[已签名页面] 修正isSigned标志为YES");
+            ipa.isSigned = YES;
+            [ipa zx_dbSave];
+        }
+    }
+    
+    // 如果列表为空，尝试直接从数据库查询
+    if (self.signedIpaList.count == 0) {
+        NSLog(@"[已签名页面] 尝试直接从数据库查询已签名IPA");
+        
+        // 尝试查询标题包含"已签名"的IPA
+        NSArray<ZXIpaModel *> *titleSignedIpas = [ZXIpaModel zx_dbQuaryWhere:@"title LIKE '%已签名%'"];
+        if (titleSignedIpas.count > 0) {
+            NSLog(@"[已签名页面] 从数据库查询到%lu个标题包含'已签名'的IPA", (unsigned long)titleSignedIpas.count);
+            self.signedIpaList = titleSignedIpas;
+        } else {
+            // 尝试查询路径包含"SignedIpa"的IPA
+            NSArray<ZXIpaModel *> *pathSignedIpas = [ZXIpaModel zx_dbQuaryWhere:@"localPath LIKE '%SignedIpa%'"];
+            if (pathSignedIpas.count > 0) {
+                NSLog(@"[已签名页面] 从数据库查询到%lu个路径包含'SignedIpa'的IPA", (unsigned long)pathSignedIpas.count);
+                self.signedIpaList = pathSignedIpas;
+            } else {
+                // 尝试查询所有IPA，然后手动过滤
+                NSLog(@"[已签名页面] 尝试查询所有IPA并手动过滤");
+                NSArray<ZXIpaModel *> *allIpas = [ZXIpaModel zx_dbQuaryAll];
+                NSMutableArray<ZXIpaModel *> *filteredIpas = [NSMutableArray array];
+                
+                for (ZXIpaModel *ipa in allIpas) {
+                    NSLog(@"[已签名页面] 检查IPA: %@, 路径: %@", ipa.title, ipa.localPath);
+                    
+                    // 检查文件是否存在
+                    BOOL fileExists = ipa.localPath && [[NSFileManager defaultManager] fileExistsAtPath:ipa.localPath];
+                    
+                    // 检查是否为已签名IPA
+                    if ((ipa.title && [ipa.title containsString:@"已签名"]) || 
+                        (ipa.localPath && [ipa.localPath containsString:@"SignedIpa"]) ||
+                        ipa.isSigned) {
+                        
+                        if (fileExists) {
+                            // 确保isSigned标志设置正确
+                            ipa.isSigned = YES;
+                            [ipa zx_dbSave];
+                            
+                            [filteredIpas addObject:ipa];
+                            NSLog(@"[已签名页面] 找到已签名IPA: %@", ipa.title);
+                        } else {
+                            NSLog(@"[已签名页面] 已签名IPA文件不存在: %@", ipa.localPath);
+                        }
+                    }
+                }
+                
+                if (filteredIpas.count > 0) {
+                    NSLog(@"[已签名页面] 手动过滤找到%lu个已签名IPA", (unsigned long)filteredIpas.count);
+                    self.signedIpaList = filteredIpas;
+                }
+            }
+        }
+    }
+    
+    // 过滤掉文件不存在的IPA
+    NSMutableArray *validIpas = [NSMutableArray array];
+    for (ZXIpaModel *ipa in self.signedIpaList) {
+        if (ipa.localPath && [[NSFileManager defaultManager] fileExistsAtPath:ipa.localPath]) {
+            [validIpas addObject:ipa];
+        } else {
+            NSLog(@"[已签名页面] IPA文件不存在，从列表中移除: %@", ipa.localPath);
+        }
+    }
+    self.signedIpaList = validIpas;
     
     // 更新UI
     [self.tableView reloadData];
     
     // 显示或隐藏空视图
     self.emptyLabel.hidden = self.signedIpaList.count > 0;
+    
+    if (self.signedIpaList.count == 0) {
+        NSLog(@"[已签名页面] 没有找到已签名IPA，显示空视图");
+    } else {
+        NSLog(@"[已签名页面] 显示%lu个已签名IPA", (unsigned long)self.signedIpaList.count);
+    }
 }
 
 #pragma mark - UITableViewDataSource
