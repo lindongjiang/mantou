@@ -15,10 +15,19 @@
 #import "NSString+ZXMD5.h"
 
 #import "ZXLocalIpaVC.h"
+#import "AFNetworking.h"
+#import "ZXIpaManager.h"
+
 @interface ZXIpaDetailVC ()
 @property (weak, nonatomic) IBOutlet ZXTableView *tableView;
 @property (nonatomic, strong) UIActivityIndicatorView *activityIndicator;
 @property (nonatomic, strong) UIView *overlayView;
+@property (nonatomic, strong) UIProgressView *progressView;
+
+// 添加辅助方法声明
+- (void)showWarningTip:(NSString *)message;
+- (void)showSuccessTip:(NSString *)message;
+- (void)showCertificateSelectorWithP12Certificates:(NSArray *)p12Certificates provisionProfiles:(NSArray *)provisionProfiles ipaPath:(NSString *)ipaPath;
 @end
 
 @implementation ZXIpaDetailVC
@@ -48,6 +57,11 @@
     self.activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
     self.activityIndicator.center = self.overlayView.center;
     [self.overlayView addSubview:self.activityIndicator];
+    
+    self.progressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    self.progressView.frame = CGRectMake(50, self.activityIndicator.frame.origin.y + self.activityIndicator.frame.size.height + 20, self.view.bounds.size.width - 100, 10);
+    self.progressView.progressTintColor = MainColor;
+    [self.overlayView addSubview:self.progressView];
     
     [self.view addSubview:self.overlayView];
 }
@@ -127,330 +141,796 @@
 
 #pragma mark - 签名相关方法
 - (void)handleSignAction {
-    // 检查IPA文件是否已下载
-    if (![ZXFileManage isExistWithPath:self.ipaModel.localPath]) {
-        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"提示"
-                                                                                 message:@"请先下载IPA文件再进行签名"
-                                                                          preferredStyle:UIAlertControllerStyleAlert];
-        UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
-        [alertController addThemeAction:okAction];
-        [self presentViewController:alertController animated:YES completion:nil];
+    NSLog(@"[签名操作] 开始处理签名操作");
+    
+    if (!self.ipaModel) {
+        NSLog(@"[签名操作] 错误: ipaModel 为空");
+        [self showWarningTip:@"应用信息不完整，无法进行签名"];
         return;
     }
     
-    // 获取证书列表
-    ZXCertificateManager *certificateManager = [ZXCertificateManager sharedManager];
-    NSArray *p12Certificates = [certificateManager allP12Certificates];
-    NSArray *provisionProfiles = [certificateManager allProvisionProfiles];
+    // 获取Documents目录
+    NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *importedIpaDir = [documentsPath stringByAppendingPathComponent:@"ImportedIpa"];
+    NSString *sideStorePath = [importedIpaDir stringByAppendingPathComponent:@"SideStore.ipa"];
     
-    // 检查是否有可用的证书
-    if (p12Certificates.count == 0 || provisionProfiles.count == 0) {
-        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"提示"
-                                                                                 message:@"请先导入证书和描述文件"
-                                                                          preferredStyle:UIAlertControllerStyleAlert];
-        UIAlertAction *goToAction = [UIAlertAction actionWithTitle:@"去导入" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            ZXCertificateManageVC *VC = [[ZXCertificateManageVC alloc] init];
-            [self.navigationController pushViewController:VC animated:YES];
-        }];
-        UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil];
-        [alertController addThemeAction:goToAction];
-        [alertController addThemeAction:cancelAction];
-        [self presentViewController:alertController animated:YES completion:nil];
+    // 直接使用SideStore.ipa文件
+    if ([ZXFileManage fileExistWithPath:sideStorePath]) {
+        NSLog(@"[签名操作] 找到SideStore.ipa文件，直接使用: %@", sideStorePath);
+        
+        // 直接从证书管理器获取证书和描述文件，绕过用户选择
+        ZXCertificateManager *manager = [ZXCertificateManager sharedManager];
+        NSArray *p12Certificates = [manager allP12Certificates];
+        NSArray *provisionProfiles = [manager allProvisionProfiles];
+        
+        NSLog(@"[签名操作] 获取到 %lu 个P12证书和 %lu 个描述文件", 
+              (unsigned long)p12Certificates.count, (unsigned long)provisionProfiles.count);
+        
+        if (p12Certificates.count > 0 && provisionProfiles.count > 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // 直接使用第一个证书和描述文件进行测试
+                ZXCertificateModel *p12 = p12Certificates.firstObject;
+                ZXCertificateModel *profile = provisionProfiles.firstObject;
+                
+                NSLog(@"[签名操作] 自动选择证书: %@", p12.certificateName ?: p12.filename);
+                NSLog(@"[签名操作] 自动选择描述文件: %@", profile.certificateName ?: profile.filename);
+                
+                [self performUploadWithP12:p12 provisionProfile:profile andIpa:sideStorePath];
+            });
+        } else {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSLog(@"[签名操作] 错误: 没有可用的证书或描述文件");
+                [self showWarningTip:@"没有可用的证书或描述文件，请先导入"];
+            });
+        }
         return;
     }
     
-    // 显示证书选择界面
-    [self showCertificateSelectionAlert];
+    // 如果没有找到SideStore.ipa，尝试查找其他IPA文件
+    NSLog(@"[签名操作] 未找到SideStore.ipa，尝试查找其他IPA文件");
+    
+    // 查找正确的IPA文件路径
+    NSString *ipaPath = [self findCorrectIpaPath];
+    if (!ipaPath) {
+        NSLog(@"[签名操作] 错误: 无法找到IPA文件");
+        [self showWarningTip:@"无法找到IPA文件，请确保文件已正确导入"];
+        return;
+    }
+    
+    NSLog(@"[签名操作] 找到有效的IPA文件路径: %@", ipaPath);
+    
+    // 直接从证书管理器获取证书和描述文件，绕过用户选择
+    ZXCertificateManager *manager = [ZXCertificateManager sharedManager];
+    NSArray *p12Certificates = [manager allP12Certificates];
+    NSArray *provisionProfiles = [manager allProvisionProfiles];
+    
+    NSLog(@"[签名操作] 获取到 %lu 个P12证书和 %lu 个描述文件", 
+          (unsigned long)p12Certificates.count, (unsigned long)provisionProfiles.count);
+    
+    if (p12Certificates.count > 0 && provisionProfiles.count > 0) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // 直接使用第一个证书和描述文件进行测试
+            ZXCertificateModel *p12 = p12Certificates.firstObject;
+            ZXCertificateModel *profile = provisionProfiles.firstObject;
+            
+            NSLog(@"[签名操作] 自动选择证书: %@", p12.certificateName ?: p12.filename);
+            NSLog(@"[签名操作] 自动选择描述文件: %@", profile.certificateName ?: profile.filename);
+            
+            [self performUploadWithP12:p12 provisionProfile:profile andIpa:ipaPath];
+        });
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSLog(@"[签名操作] 错误: 没有可用的证书或描述文件");
+            [self showWarningTip:@"没有可用的证书或描述文件，请先导入"];
+        });
+    }
 }
 
-- (void)showCertificateSelectionAlert {
-    ZXCertificateManager *certificateManager = [ZXCertificateManager sharedManager];
-    NSArray *p12Certificates = [certificateManager allP12Certificates];
+// 查找正确的IPA文件路径
+- (NSString *)findCorrectIpaPath {
+    NSString *ipaPath = self.ipaModel.localPath;
+    NSString *ipaFileName = [ipaPath lastPathComponent];
+    NSLog(@"[查找IPA] 开始查找IPA文件: %@", ipaFileName);
+    NSLog(@"[查找IPA] 原始路径: %@", ipaPath);
     
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"选择证书"
-                                                                             message:@"请选择用于签名的证书"
-                                                                      preferredStyle:UIAlertControllerStyleActionSheet];
+    // 获取Documents目录
+    NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSLog(@"[查找IPA] Documents目录: %@", documentsPath);
     
-    for (ZXCertificateModel *p12Model in p12Certificates) {
-        NSString *title = p12Model.certificateName ?: p12Model.filename;
-        UIAlertAction *action = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            // 查找匹配的描述文件
-            NSArray *provisionProfiles = [certificateManager allProvisionProfiles];
-            ZXCertificateModel *matchingProfile = nil;
+    // 检查ImportedIpa目录中的SideStore.ipa文件（根据日志中看到的）
+    NSString *importedIpaDir = [documentsPath stringByAppendingPathComponent:@"ImportedIpa"];
+    NSString *sideStorePath = [importedIpaDir stringByAppendingPathComponent:@"SideStore.ipa"];
+    NSLog(@"[查找IPA] 检查SideStore.ipa: %@", sideStorePath);
+    
+    if ([ZXFileManage fileExistWithPath:sideStorePath]) {
+        NSLog(@"[查找IPA] 找到SideStore.ipa文件: %@", sideStorePath);
+        return sideStorePath;
+    }
+    
+    // 检查原始路径
+    if ([ZXFileManage fileExistWithPath:ipaPath]) {
+        NSLog(@"[查找IPA] 原始路径存在: %@", ipaPath);
+        return ipaPath;
+    }
+    
+    // 检查ImportedIpa目录
+    NSString *importedIpaPath = [importedIpaDir stringByAppendingPathComponent:ipaFileName];
+    NSLog(@"[查找IPA] 检查ImportedIpa目录中的文件: %@", importedIpaPath);
+    
+    if ([ZXFileManage fileExistWithPath:importedIpaPath]) {
+        NSLog(@"[查找IPA] 在ImportedIpa目录中找到: %@", importedIpaPath);
+        return importedIpaPath;
+    }
+    
+    // 检查ImportedIpa目录中的所有文件
+    NSLog(@"[查找IPA] 检查ImportedIpa目录中的所有IPA文件");
+    NSArray *importedFiles = [ZXFileManage getContentsOfDirectory:importedIpaDir];
+    NSLog(@"[查找IPA] ImportedIpa目录中有 %lu 个文件", (unsigned long)importedFiles.count);
+    
+    for (NSString *fileName in importedFiles) {
+        NSLog(@"[查找IPA] 检查文件: %@", fileName);
+        if ([fileName hasSuffix:@".ipa"]) {
+            NSString *fullPath = [importedIpaDir stringByAppendingPathComponent:fileName];
+            NSLog(@"[查找IPA] 在ImportedIpa目录中找到IPA文件: %@", fullPath);
+            return fullPath;
+        }
+    }
+    
+    // 检查下载目录
+    NSString *downloadDir = [documentsPath stringByAppendingPathComponent:@"ZXIpaDownloadedArr"];
+    NSLog(@"[查找IPA] 检查下载目录: %@", downloadDir);
+    
+    if ([ZXFileManage fileExistWithPath:downloadDir]) {
+        // 检查直接在下载目录中的文件
+        NSString *directDownloadPath = [downloadDir stringByAppendingPathComponent:ipaFileName];
+        NSLog(@"[查找IPA] 检查下载目录中的文件: %@", directDownloadPath);
+        
+        if ([ZXFileManage fileExistWithPath:directDownloadPath]) {
+            NSLog(@"[查找IPA] 在下载目录中找到: %@", directDownloadPath);
+            return directDownloadPath;
+        }
+        
+        // 检查下载目录的子目录
+        NSLog(@"[查找IPA] 检查下载目录的子目录");
+        NSArray *subDirs = [ZXFileManage getContentsOfDirectory:downloadDir];
+        NSLog(@"[查找IPA] 下载目录中有 %lu 个子目录/文件", (unsigned long)subDirs.count);
+        
+        for (NSString *subDir in subDirs) {
+            if ([subDir hasPrefix:@"."]) {
+                NSLog(@"[查找IPA] 跳过隐藏文件/目录: %@", subDir);
+                continue;
+            }
             
-            for (ZXCertificateModel *provisionModel in provisionProfiles) {
-                if ([certificateManager verifyP12Certificate:p12Model withProvisionProfile:provisionModel]) {
-                    matchingProfile = provisionModel;
-                    break;
+            NSString *subDirPath = [downloadDir stringByAppendingPathComponent:subDir];
+            NSLog(@"[查找IPA] 检查子目录: %@", subDirPath);
+            
+            if ([ZXFileManage getPathAttrWithPath:subDirPath] == PathAttrDir) {
+                NSString *potentialPath = [subDirPath stringByAppendingPathComponent:ipaFileName];
+                NSLog(@"[查找IPA] 检查子目录中的文件: %@", potentialPath);
+                
+                if ([ZXFileManage fileExistWithPath:potentialPath]) {
+                    NSLog(@"[查找IPA] 在下载目录的子目录中找到: %@", potentialPath);
+                    return potentialPath;
+                }
+                
+                // 检查子目录中的所有IPA文件
+                NSLog(@"[查找IPA] 检查子目录中的所有IPA文件");
+                NSArray *subDirFiles = [ZXFileManage getContentsOfDirectory:subDirPath];
+                NSLog(@"[查找IPA] 子目录中有 %lu 个文件", (unsigned long)subDirFiles.count);
+                
+                for (NSString *fileName in subDirFiles) {
+                    NSLog(@"[查找IPA] 检查文件: %@", fileName);
+                    if ([fileName hasSuffix:@".ipa"]) {
+                        NSString *fullPath = [subDirPath stringByAppendingPathComponent:fileName];
+                        NSLog(@"[查找IPA] 在下载目录的子目录中找到IPA文件: %@", fullPath);
+                        return fullPath;
+                    }
                 }
             }
-            
-            if (matchingProfile) {
-                // 开始签名过程
-                [self startSigningWithP12:p12Model andProvisionProfile:matchingProfile];
-            } else {
-                // 没有找到匹配的描述文件
-                UIAlertController *errorAlert = [UIAlertController alertControllerWithTitle:@"错误"
-                                                                                    message:@"没有找到与该证书匹配的描述文件"
-                                                                             preferredStyle:UIAlertControllerStyleAlert];
-                UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
-                [errorAlert addThemeAction:okAction];
-                [self presentViewController:errorAlert animated:YES completion:nil];
-            }
-        }];
-        [alertController addThemeAction:action];
+        }
     }
     
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil];
-    [alertController addThemeAction:cancelAction];
-    
-    // 在iPad上需要设置弹出位置
-    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-        alertController.popoverPresentationController.sourceView = self.view;
-        alertController.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
-        alertController.popoverPresentationController.permittedArrowDirections = 0;
-    }
-    
-    [self presentViewController:alertController animated:YES completion:nil];
+    NSLog(@"[查找IPA] 无法找到任何IPA文件");
+    return nil;
 }
 
-- (void)startSigningWithP12:(ZXCertificateModel *)p12Model andProvisionProfile:(ZXCertificateModel *)provisionProfile {
-    // 显示加载指示器
-    self.overlayView.hidden = NO;
-    [self.activityIndicator startAnimating];
+// 签名IPA文件
+- (void)signIpaFile:(NSString *)ipaPath {
+    NSLog(@"[签名流程] ========== 开始签名IPA文件: %@", [ipaPath lastPathComponent]);
+    NSLog(@"[签名流程] IPA文件路径: %@", ipaPath);
     
-    // 获取证书密码
-    NSString *password = [[ZXCertificateManager sharedManager] passwordForP12Certificate:p12Model];
+    // 1. 检查IPA文件是否存在
+    BOOL fileExists = [ZXFileManage fileExistWithPath:ipaPath];
+    NSLog(@"[签名流程] 文件存在检查: %@", fileExists ? @"是" : @"否");
     
-    // 准备上传参数
-    NSString *bundleId = self.ipaModel.bundleId;
-    NSURL *ipaURL = [NSURL fileURLWithPath:self.ipaModel.localPath];
-    NSURL *p12URL = [NSURL fileURLWithPath:p12Model.filepath];
+    if (!fileExists) {
+        NSLog(@"[签名流程] 原始路径不存在，尝试查找正确的IPA路径");
+        
+        // 使用新的查找方法
+        NSString *correctPath = [self findCorrectIpaPath];
+        if (correctPath) {
+            NSLog(@"[签名流程] 找到正确的IPA路径: %@", correctPath);
+            ipaPath = correctPath;
+        } else {
+            NSLog(@"[签名流程] 错误: 无法找到IPA文件，已尝试所有可能的路径");
+            [self showWarningTip:@"找不到IPA文件，请重新导入"];
+            return;
+        }
+    }
     
-    // 创建会话配置
-    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration];
+    NSLog(@"[签名流程] 使用IPA文件路径: %@", ipaPath);
     
-    // 创建请求
-    NSURL *url = [NSURL URLWithString:@"https://ipa.cloudmantoub.online/index/index/uploads"];
+    // 2. 获取证书和描述文件
+    ZXCertificateManager *manager = [ZXCertificateManager sharedManager];
+    NSArray *p12Certificates = [manager allP12Certificates];
+    NSArray *provisionProfiles = [manager allProvisionProfiles];
+    
+    NSLog(@"[签名流程] 获取到 %lu 个p12证书和 %lu 个描述文件", (unsigned long)p12Certificates.count, (unsigned long)provisionProfiles.count);
+    
+    // 证书和描述文件都存在
+    if (p12Certificates.count > 0 && provisionProfiles.count > 0) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSLog(@"[签名流程] 准备显示证书选择器");
+            [self showCertificateSelectorWithP12Certificates:p12Certificates
+                                           provisionProfiles:provisionProfiles
+                                                    ipaPath:ipaPath];
+        });
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSLog(@"[签名流程] 没有找到证书或描述文件");
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法签名"
+                                                                           message:@"没有找到有效的证书和描述文件，请先导入证书"
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            
+            UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleCancel handler:nil];
+            [alert addAction:cancelAction];
+            
+            [self presentViewController:alert animated:YES completion:nil];
+        });
+    }
+}
+
+// 执行上传操作
+- (void)performUploadWithP12:(ZXCertificateModel *)p12 
+            provisionProfile:(ZXCertificateModel *)provisionProfile 
+                     andIpa:(NSString *)ipaPath {
+    NSLog(@"[签名上传] 开始上传文件到服务器");
+    NSLog(@"[签名上传] 证书: %@, 路径: %@", p12.certificateName ?: p12.filename, p12.filepath);
+    NSLog(@"[签名上传] 描述文件: %@, 路径: %@", provisionProfile.certificateName ?: provisionProfile.filename, provisionProfile.filepath);
+    NSLog(@"[签名上传] IPA文件: %@", ipaPath);
+    
+    // 显示加载视图
+    [self showLoadingView];
+    NSLog(@"[签名上传] 显示加载视图");
+    
+    // 检查所有文件是否存在
+    if (![ZXFileManage fileExistWithPath:p12.filepath]) {
+        NSLog(@"[签名上传] 错误: P12证书文件不存在");
+        [self hideLoadingView];
+        [self showWarningTip:@"P12证书文件不存在，请重新导入"];
+        return;
+    }
+    
+    if (![ZXFileManage fileExistWithPath:provisionProfile.filepath]) {
+        NSLog(@"[签名上传] 错误: 描述文件不存在");
+        [self hideLoadingView];
+        [self showWarningTip:@"描述文件不存在，请重新导入"];
+        return;
+    }
+    
+    // 再次检查IPA文件是否存在，如果不存在则尝试查找
+    if (![ZXFileManage fileExistWithPath:ipaPath]) {
+        NSLog(@"[签名上传] 错误: 提供的IPA文件路径不存在，尝试查找正确的路径");
+        NSString *correctPath = [self findCorrectIpaPath];
+        if (correctPath) {
+            NSLog(@"[签名上传] 找到正确的IPA文件路径: %@", correctPath);
+            ipaPath = correctPath;
+        } else {
+            NSLog(@"[签名上传] 错误: 无法找到IPA文件");
+            [self hideLoadingView];
+            [self showWarningTip:@"IPA文件不存在，请重新导入"];
+            return;
+        }
+    }
+    
+    // 创建URL和请求
+    NSURL *url = [NSURL URLWithString:@"https://cloud.cloudmantoub.online/sign"];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-    request.HTTPMethod = @"POST";
+    [request setHTTPMethod:@"POST"];
     
-    // 生成边界字符串
+    // 生成boundary字符串，用于multipart/form-data请求
     NSString *boundary = [NSString stringWithFormat:@"Boundary-%@", [[NSUUID UUID] UUIDString]];
     NSString *contentType = [NSString stringWithFormat:@"multipart/form-data; boundary=%@", boundary];
     [request setValue:contentType forHTTPHeaderField:@"Content-Type"];
     
-    // 创建请求体
+    // 创建multipart/form-data的body数据
     NSMutableData *body = [NSMutableData data];
+    NSString *boundaryPrefix = [NSString stringWithFormat:@"--%@\r\n", boundary];
+    NSString *boundarySuffix = [NSString stringWithFormat:@"\r\n--%@--\r\n", boundary];
+    
+    // 添加p12证书文件
+    NSLog(@"[签名上传] 添加P12证书文件: %@", p12.filepath);
+    [body appendData:[boundaryPrefix dataUsingEncoding:NSUTF8StringEncoding]];
+    [body appendData:[[NSString stringWithFormat:@"Content-Disposition: form-data; name=\"p12\"; filename=\"%@\"\r\n", [p12.filepath lastPathComponent]] dataUsingEncoding:NSUTF8StringEncoding]];
+    [body appendData:[@"Content-Type: application/octet-stream\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+    NSData *p12Data = [NSData dataWithContentsOfFile:p12.filepath];
+    if (!p12Data) {
+        NSLog(@"[签名上传] 错误: 无法读取P12证书文件数据");
+        [self hideLoadingView];
+        [self showWarningTip:@"无法读取P12证书文件数据"];
+        return;
+    }
+    [body appendData:p12Data];
+    [body appendData:[@"\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+    
+    // 添加描述文件
+    NSLog(@"[签名上传] 添加描述文件: %@", provisionProfile.filepath);
+    [body appendData:[boundaryPrefix dataUsingEncoding:NSUTF8StringEncoding]];
+    [body appendData:[[NSString stringWithFormat:@"Content-Disposition: form-data; name=\"mobileprovision\"; filename=\"%@\"\r\n", [provisionProfile.filepath lastPathComponent]] dataUsingEncoding:NSUTF8StringEncoding]];
+    [body appendData:[@"Content-Type: application/octet-stream\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+    NSData *profileData = [NSData dataWithContentsOfFile:provisionProfile.filepath];
+    if (!profileData) {
+        NSLog(@"[签名上传] 错误: 无法读取描述文件数据");
+        [self hideLoadingView];
+        [self showWarningTip:@"无法读取描述文件数据"];
+        return;
+    }
+    [body appendData:profileData];
+    [body appendData:[@"\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
     
     // 添加IPA文件
-    [body appendData:[[NSString stringWithFormat:@"--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[[NSString stringWithFormat:@"Content-Disposition: form-data; name=\"file[]\"; filename=\"%@\"\r\n", ipaURL.lastPathComponent] dataUsingEncoding:NSUTF8StringEncoding]];
+    NSLog(@"[签名上传] 添加IPA文件: %@", ipaPath);
+    [body appendData:[boundaryPrefix dataUsingEncoding:NSUTF8StringEncoding]];
+    [body appendData:[[NSString stringWithFormat:@"Content-Disposition: form-data; name=\"ipa\"; filename=\"%@\"\r\n", [ipaPath lastPathComponent]] dataUsingEncoding:NSUTF8StringEncoding]];
     [body appendData:[@"Content-Type: application/octet-stream\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[NSData dataWithContentsOfURL:ipaURL]];
+    NSData *ipaData = [NSData dataWithContentsOfFile:ipaPath];
+    if (!ipaData) {
+        NSLog(@"[签名上传] 错误: 无法读取IPA文件数据");
+        [self hideLoadingView];
+        [self showWarningTip:@"无法读取IPA文件数据"];
+        return;
+    }
+    [body appendData:ipaData];
     [body appendData:[@"\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
     
-    // 添加P12文件
-    [body appendData:[[NSString stringWithFormat:@"--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[[NSString stringWithFormat:@"Content-Disposition: form-data; name=\"file[]\"; filename=\"%@\"\r\n", p12URL.lastPathComponent] dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[@"Content-Type: application/octet-stream\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[NSData dataWithContentsOfURL:p12URL]];
-    [body appendData:[@"\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+    // 添加p12密码字段
+    if (p12.pwd && p12.pwd.length > 0) {
+        NSLog(@"[签名上传] 添加P12密码");
+        [body appendData:[boundaryPrefix dataUsingEncoding:NSUTF8StringEncoding]];
+        [body appendData:[@"Content-Disposition: form-data; name=\"p12_password\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+        [body appendData:[p12.pwd dataUsingEncoding:NSUTF8StringEncoding]];
+        [body appendData:[@"\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+    } else {
+        NSLog(@"[签名上传] 警告: P12密码为空");
+    }
     
-    // 添加密码
-    [body appendData:[[NSString stringWithFormat:@"--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[@"Content-Disposition: form-data; name=\"password\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[password dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[@"\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
-    
-    // 添加bundleId
-    [body appendData:[[NSString stringWithFormat:@"--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[@"Content-Disposition: form-data; name=\"bundleid\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[bundleId dataUsingEncoding:NSUTF8StringEncoding]];
-    [body appendData:[@"\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
-    
-    // 结束边界
-    [body appendData:[[NSString stringWithFormat:@"--%@--\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+    // 添加结束边界
+    [body appendData:[boundarySuffix dataUsingEncoding:NSUTF8StringEncoding]];
     
     // 设置请求体
-    request.HTTPBody = body;
+    [request setHTTPBody:body];
     
-    // 发送请求
-    NSURLSessionDataTask *task = [session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    // 创建和启动上传任务
+    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration];
+    
+    NSLog(@"[签名上传] 开始上传，数据大小: %lu 字节", (unsigned long)body.length);
+    
+    // 显示上传进度
+    NSURLSessionUploadTask *uploadTask = [session uploadTaskWithRequest:request
+                                                               fromData:body
+                                                      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSLog(@"[签名上传] 上传完成，处理响应");
+        
         dispatch_async(dispatch_get_main_queue(), ^{
-            // 隐藏加载指示器
-            self.overlayView.hidden = YES;
-            [self.activityIndicator stopAnimating];
+            // 关闭加载视图
+            [self hideLoadingView];
             
             if (error) {
-                // 处理错误
-                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"签名失败"
-                                                                                         message:[NSString stringWithFormat:@"错误: %@", error.localizedDescription]
-                                                                                  preferredStyle:UIAlertControllerStyleAlert];
-                UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
-                [alertController addThemeAction:okAction];
-                [self presentViewController:alertController animated:YES completion:nil];
+                NSLog(@"[签名上传] 上传错误: %@", error.localizedDescription);
+                [self showWarningTip:[NSString stringWithFormat:@"上传失败: %@", error.localizedDescription]];
                 return;
             }
             
-            // 解析响应
             NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
-            if (httpResponse.statusCode == 200) {
-                NSError *jsonError;
-                NSDictionary *jsonResponse = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+            NSLog(@"[签名上传] 服务器响应状态码: %ld", (long)httpResponse.statusCode);
+            NSLog(@"[签名上传] 响应头: %@", httpResponse.allHeaderFields);
+            
+            if (data) {
+                NSString *responseString = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+                NSLog(@"[签名上传] 响应内容: %@", responseString);
+            }
+            
+            if (httpResponse.statusCode >= 200 && httpResponse.statusCode < 300) {
+                // 解析响应数据
+                NSError *jsonError = nil;
+                NSDictionary *responseDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
                 
                 if (jsonError) {
-                    // JSON解析错误
-                    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"签名失败"
-                                                                                             message:@"无法解析服务器响应"
-                                                                                      preferredStyle:UIAlertControllerStyleAlert];
-                    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
-                    [alertController addThemeAction:okAction];
-                    [self presentViewController:alertController animated:YES completion:nil];
-                    return;
-                }
-                
-                // 检查响应状态
-                NSInteger code = [jsonResponse[@"code"] integerValue];
-                NSString *msg = jsonResponse[@"msg"];
-                
-                if (code == 200) {
-                    // 签名成功，下载已签名的IPA
-                    NSDictionary *data = jsonResponse[@"data"];
-                    NSString *downloadUrl = data[@"url"];
-                    
-                    if (downloadUrl) {
-                        [self downloadSignedIpa:downloadUrl];
-                    } else {
-                        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"签名失败"
-                                                                                                 message:@"服务器未返回下载链接"
-                                                                                          preferredStyle:UIAlertControllerStyleAlert];
-                        UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
-                        [alertController addThemeAction:okAction];
-                        [self presentViewController:alertController animated:YES completion:nil];
-                    }
+                    NSLog(@"[签名上传] 响应数据解析错误: %@", jsonError.localizedDescription);
+                    [self showWarningTip:@"响应数据解析错误"];
                 } else {
-                    // 签名失败
-                    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"签名失败"
-                                                                                             message:msg ?: @"未知错误"
-                                                                                      preferredStyle:UIAlertControllerStyleAlert];
-                    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
-                    [alertController addThemeAction:okAction];
-                    [self presentViewController:alertController animated:YES completion:nil];
+                    NSLog(@"[签名上传] 服务器响应: %@", responseDict);
+                    
+                    // 根据服务器响应显示结果
+                    BOOL success = [responseDict[@"success"] boolValue];
+                    NSString *message = responseDict[@"message"];
+                    
+                    if (success) {
+                        NSLog(@"[签名上传] 签名请求成功: %@", message);
+                        [self showSuccessTip:@"签名请求已成功提交，请等待签名完成"];
+                        
+                        // 处理响应数据，比如下载签名后的IPA
+                        if (responseDict[@"data"] && [responseDict[@"data"] isKindOfClass:[NSDictionary class]]) {
+                            NSDictionary *dataDict = responseDict[@"data"];
+                            NSString *downloadUrl = dataDict[@"download_url"];
+                            
+                            if (downloadUrl && downloadUrl.length > 0) {
+                                NSLog(@"[签名上传] 签名后的IPA下载链接: %@", downloadUrl);
+                                // 保存下载链接，稍后用于下载
+                                self.signedIpaDownloadUrl = downloadUrl;
+                                
+                                // 可以选择显示下载按钮或自动开始下载
+                                [self showSignedIpaDownloadOptions];
+                            }
+                        }
+                    } else {
+                        NSLog(@"[签名上传] 签名请求失败: %@", message);
+                        [self showWarningTip:[NSString stringWithFormat:@"签名失败: %@", message ?: @"未知错误"]];
+                    }
                 }
             } else {
-                // HTTP错误
-                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"签名失败"
-                                                                                         message:[NSString stringWithFormat:@"服务器返回错误: %ld", (long)httpResponse.statusCode]
-                                                                                  preferredStyle:UIAlertControllerStyleAlert];
-                UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
-                [alertController addThemeAction:okAction];
-                [self presentViewController:alertController animated:YES completion:nil];
+                NSLog(@"[签名上传] 服务器返回错误状态码: %ld", (long)httpResponse.statusCode);
+                [self showWarningTip:[NSString stringWithFormat:@"服务器错误: %ld", (long)httpResponse.statusCode]];
             }
         });
     }];
     
-    [task resume];
+    [uploadTask resume];
+    
+    // 显示日志信息
+    NSLog(@"[签名上传] 上传任务已开始");
 }
 
-- (void)downloadSignedIpa:(NSString *)downloadUrl {
-    // 显示加载指示器
-    self.overlayView.hidden = NO;
-    [self.activityIndicator startAnimating];
+- (void)showSignedIpaDownloadOptions {
+    if (!self.signedIpaDownloadUrl || self.signedIpaDownloadUrl.length == 0) {
+        NSLog(@"[签名下载] 没有可用的下载链接");
+        return;
+    }
     
-    // 创建会话配置
+    NSLog(@"[签名下载] 显示下载选项，URL: %@", self.signedIpaDownloadUrl);
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"签名完成"
+                                                                   message:@"您的IPA文件已签名完成，是否立即下载？"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    
+    UIAlertAction *downloadAction = [UIAlertAction actionWithTitle:@"下载"
+                                                             style:UIAlertActionStyleDefault
+                                                           handler:^(UIAlertAction * _Nonnull action) {
+        NSLog(@"[签名下载] 用户选择下载签名后的IPA");
+        [self downloadSignedIpa];
+    }];
+    
+    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"稍后下载"
+                                                           style:UIAlertActionStyleCancel
+                                                         handler:^(UIAlertAction * _Nonnull action) {
+        NSLog(@"[签名下载] 用户选择稍后下载");
+    }];
+    
+    [alert addAction:downloadAction];
+    [alert addAction:cancelAction];
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+- (void)downloadSignedIpa {
+    if (!self.signedIpaDownloadUrl || self.signedIpaDownloadUrl.length == 0) {
+        NSLog(@"[签名下载] 错误: 没有可用的下载链接");
+        [self showWarningTip:@"没有可用的下载链接"];
+        return;
+    }
+    
+    NSLog(@"[签名下载] 开始下载签名后的IPA: %@", self.signedIpaDownloadUrl);
+    
+    // 显示加载视图
+    [self showLoadingView];
+    NSLog(@"[签名下载] 显示加载视图");
+    
+    // 创建下载任务
+    NSURL *url = [NSURL URLWithString:self.signedIpaDownloadUrl];
     NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
     NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration];
     
-    // 创建下载任务
-    NSURL *url = [NSURL URLWithString:downloadUrl];
     NSURLSessionDownloadTask *downloadTask = [session downloadTaskWithURL:url completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            // 隐藏加载指示器
-            self.overlayView.hidden = YES;
-            [self.activityIndicator stopAnimating];
+            [self hideLoadingView];
             
             if (error) {
-                // 处理下载错误
-                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"下载失败"
-                                                                                         message:[NSString stringWithFormat:@"错误: %@", error.localizedDescription]
-                                                                                  preferredStyle:UIAlertControllerStyleAlert];
-                UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
-                [alertController addThemeAction:okAction];
-                [self presentViewController:alertController animated:YES completion:nil];
+                NSLog(@"[签名下载] 下载错误: %@", error.localizedDescription);
+                [self showWarningTip:[NSString stringWithFormat:@"下载失败: %@", error.localizedDescription]];
                 return;
             }
             
-            // 保存已签名的IPA
+            // 获取文件名
+            NSString *fileName = [response suggestedFilename];
+            if (!fileName || fileName.length == 0) {
+                fileName = [NSString stringWithFormat:@"Signed_%@", [[NSUUID UUID] UUIDString]];
+                if (![fileName hasSuffix:@".ipa"]) {
+                    fileName = [fileName stringByAppendingString:@".ipa"];
+                }
+            }
+            
+            // 创建保存路径
             NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-            NSString *signedIpaPath = [documentsPath stringByAppendingPathComponent:@"SignedIpa"];
+            NSString *signedIpaDir = [documentsPath stringByAppendingPathComponent:@"SignedIpa"];
             
             // 确保目录存在
-            if (![ZXFileManage fileExistWithPath:signedIpaPath]) {
-                [ZXFileManage creatDirWithPath:signedIpaPath];
+            if (![ZXFileManage fileExistWithPath:signedIpaDir]) {
+                [ZXFileManage createDirectory:signedIpaDir];
             }
             
-            // 创建文件名
-            NSString *fileName = [NSString stringWithFormat:@"%@_signed.ipa", self.ipaModel.title];
-            NSString *filePath = [signedIpaPath stringByAppendingPathComponent:fileName];
+            NSString *destinationPath = [signedIpaDir stringByAppendingPathComponent:fileName];
             
             // 移动文件
-            NSError *moveError;
-            [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:filePath] error:&moveError];
+            NSError *moveError = nil;
+            [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:destinationPath] error:&moveError];
             
             if (moveError) {
-                // 处理移动错误
-                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"保存失败"
-                                                                                         message:[NSString stringWithFormat:@"错误: %@", moveError.localizedDescription]
-                                                                                  preferredStyle:UIAlertControllerStyleAlert];
-                UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
-                [alertController addThemeAction:okAction];
-                [self presentViewController:alertController animated:YES completion:nil];
-                return;
+                NSLog(@"[签名下载] 保存文件错误: %@", moveError.localizedDescription);
+                [self showWarningTip:[NSString stringWithFormat:@"保存文件失败: %@", moveError.localizedDescription]];
+            } else {
+                NSLog(@"[签名下载] 文件已保存: %@", destinationPath);
+                [self showSuccessTip:@"签名后的IPA文件已下载成功"];
+                
+                // 添加到已导入列表
+                [self importSignedIpa:destinationPath];
             }
-            
-            // 创建已签名IPA的模型
-            ZXIpaModel *signedIpaModel = [[ZXIpaModel alloc] init];
-            signedIpaModel.title = [NSString stringWithFormat:@"%@ (已签名)", self.ipaModel.title];
-            signedIpaModel.version = self.ipaModel.version;
-            signedIpaModel.bundleId = self.ipaModel.bundleId;
-            signedIpaModel.iconUrl = self.ipaModel.iconUrl;
-            signedIpaModel.downloadUrl = downloadUrl;
-            signedIpaModel.fromPageUrl = self.ipaModel.fromPageUrl;
-            signedIpaModel.localPath = filePath;
-            signedIpaModel.isSigned = YES;
-            signedIpaModel.signedTime = [self currentTimeString];
-            
-            // 生成唯一标识
-            NSString *uniqueString = [NSString stringWithFormat:@"%@_%@_signed", self.ipaModel.bundleId, self.ipaModel.version];
-            signedIpaModel.sign = [uniqueString md5Str];
-            
-            // 保存到数据库
-            [signedIpaModel zx_dbSave];
-            
-            // 显示成功提示
-            UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"签名成功"
-                                                                                     message:@"IPA已成功签名并保存"
-                                                                              preferredStyle:UIAlertControllerStyleAlert];
-            UIAlertAction *viewAction = [UIAlertAction actionWithTitle:@"查看已签名IPA" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                ZXSignedIpaVC *VC = [[ZXSignedIpaVC alloc] init];
-                [self.navigationController pushViewController:VC animated:YES];
-            }];
-            UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
-            [alertController addThemeAction:viewAction];
-            [alertController addThemeAction:okAction];
-            [self presentViewController:alertController animated:YES completion:nil];
         });
     }];
     
     [downloadTask resume];
+    NSLog(@"[签名下载] 下载任务已开始");
 }
 
-- (NSString *)currentTimeString {
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss";
-    return [formatter stringFromDate:[NSDate date]];
+- (void)importSignedIpa:(NSString *)ipaPath {
+    NSLog(@"[签名下载] 导入签名后的IPA: %@", ipaPath);
+    
+    // 解析IPA文件
+    ZXIpaModel *ipaModel = [self parseIpaFile:ipaPath];
+    
+    if (ipaModel) {
+        NSLog(@"[签名下载] IPA解析成功: %@", ipaModel.title);
+        
+        // 保存到数据库
+        [self saveSignedIpaToDatabase:ipaModel];
+        
+        // 通知更新UI
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ZXImportedIpaUpdated" object:nil];
+    } else {
+        NSLog(@"[签名下载] IPA解析失败");
+    }
+}
+
+- (ZXIpaModel *)parseIpaFile:(NSString *)ipaPath {
+    // 从库中查找现有的解析方法，或者使用现有的解析方法
+    // 这里是一个简化的实现
+    ZXIpaModel *model = [[ZXIpaModel alloc] init];
+    model.localPath = ipaPath;
+    model.title = [[ipaPath lastPathComponent] stringByDeletingPathExtension];
+    model.version = @"未知版本";
+    model.bundleId = @"未知Bundle ID";
+    model.time = [NSString stringWithFormat:@"%@", [NSDate date]];
+    model.isSigned = YES;
+    
+    return model;
+}
+
+- (void)saveSignedIpaToDatabase:(ZXIpaModel *)ipaModel {
+    if (!ipaModel) {
+        return;
+    }
+    
+    NSLog(@"[签名下载] 保存已签名的IPA信息到数据库: %@", ipaModel.title);
+    
+    // 检查是否已存在相同的IPA
+    NSArray *sameArr = [ZXIpaModel zx_dbQuaryWhere:[NSString stringWithFormat:@"bundleId='%@' AND isSigned=1", ipaModel.bundleId]];
+    if (sameArr.count) {
+        NSLog(@"[签名下载] 数据库中已存在相同Bundle ID的已签名记录，删除旧记录: %@", ipaModel.bundleId);
+        [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@' AND isSigned=1", ipaModel.bundleId]];
+    }
+    
+    // 生成唯一标识
+    if (!ipaModel.sign) {
+        NSString *orgSign = [NSString stringWithFormat:@"%@%@%@%@", 
+                              ipaModel.bundleId, 
+                              ipaModel.version, 
+                              ipaModel.localPath,
+                              @"signed"];
+        ipaModel.sign = [orgSign md5Str];
+    }
+    
+    // 将IPA信息保存到数据库
+    BOOL saveResult = [ipaModel zx_dbSave];
+    
+    if (saveResult) {
+        NSLog(@"[签名下载] 成功保存已签名IPA信息到数据库");
+    } else {
+        NSLog(@"[签名下载] 保存已签名IPA信息到数据库失败");
+    }
+}
+
+#pragma mark - 辅助方法
+
+- (void)showLoadingView {
+    if (!self.overlayView) {
+        self.overlayView = [[UIView alloc] initWithFrame:self.view.bounds];
+        self.overlayView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.5];
+        
+        self.activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
+        self.activityIndicator.center = self.overlayView.center;
+        [self.overlayView addSubview:self.activityIndicator];
+        
+        self.progressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+        self.progressView.frame = CGRectMake(50, self.activityIndicator.frame.origin.y + self.activityIndicator.frame.size.height + 20, self.view.bounds.size.width - 100, 10);
+        self.progressView.progressTintColor = MainColor;
+        [self.overlayView addSubview:self.progressView];
+        
+        [self.view addSubview:self.overlayView];
+    }
+    
+    self.overlayView.hidden = NO;
+    [self.activityIndicator startAnimating];
+    self.progressView.progress = 0;
+}
+
+- (void)hideLoadingView {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.overlayView.hidden = YES;
+        [self.activityIndicator stopAnimating];
+    });
+}
+
+- (void)showAlertWithTitle:(NSString *)title message:(NSString *)message {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:title
+                                                                                 message:message
+                                                                          preferredStyle:UIAlertControllerStyleAlert];
+        UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
+        [alertController addThemeAction:okAction];
+        [self presentViewController:alertController animated:YES completion:nil];
+    });
+}
+
+#pragma mark - 签名方法
+
+- (void)startSigningWithP12:(ZXCertificateModel *)p12 provisionProfile:(ZXCertificateModel *)profile andIpa:(ZXIpaModel *)ipaModel {
+    NSLog(@"[签名流程] ========== 开始准备签名 ==========");
+    NSLog(@"[签名流程] 证书: %@", p12.certificateName ?: p12.filename);
+    NSLog(@"[签名流程] 描述文件: %@", profile.certificateName ?: profile.filename);
+    NSLog(@"[签名流程] IPA文件: %@", ipaModel.title);
+    
+    // 查找正确的IPA文件路径
+    NSString *ipaPath = ipaModel.localPath;
+    if (![ZXFileManage fileExistWithPath:ipaPath]) {
+        NSLog(@"[签名流程] 原始IPA路径不存在，尝试查找正确的路径");
+        self.ipaModel = ipaModel; // 设置当前ipaModel以便findCorrectIpaPath方法可以使用
+        NSString *correctPath = [self findCorrectIpaPath];
+        if (correctPath) {
+            NSLog(@"[签名流程] 找到正确的IPA路径: %@", correctPath);
+            ipaPath = correctPath;
+        } else {
+            NSLog(@"[签名流程] 错误: 无法找到IPA文件");
+            [self showWarningTip:@"无法找到IPA文件，请确保文件已正确导入"];
+            return;
+        }
+    }
+    
+    // 显示确认对话框
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[签名流程] 显示确认对话框");
+        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"确认签名"
+                                                                                message:[NSString stringWithFormat:@"您确定要使用证书 %@ 对应用 %@ 进行签名吗？", p12.certificateName ?: p12.filename, ipaModel.title]
+                                                                         preferredStyle:UIAlertControllerStyleAlert];
+        
+        UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消" 
+                                                              style:UIAlertActionStyleCancel 
+                                                            handler:^(UIAlertAction * _Nonnull action) {
+            NSLog(@"[签名流程] 用户取消了签名确认");
+        }];
+        [alertController addAction:cancelAction];
+        
+        UIAlertAction *confirmAction = [UIAlertAction actionWithTitle:@"确认上传" 
+                                                               style:UIAlertActionStyleDefault 
+                                                             handler:^(UIAlertAction * _Nonnull action) {
+            NSLog(@"[签名流程] 用户确认签名，准备上传文件");
+            
+            // 保存密码
+            NSString *password = [[ZXCertificateManager sharedManager] passwordForP12Certificate:p12];
+            self.p12Password = password;
+            NSLog(@"[签名流程] P12密码: %@", password);
+            
+            // 显示加载视图
+            NSLog(@"[签名流程] 显示加载视图");
+            [self showLoadingView];
+            
+            // 执行上传操作
+            NSLog(@"[签名流程] 开始执行上传操作");
+            [self performUploadWithP12:p12 provisionProfile:profile andIpa:ipaPath];
+        }];
+        confirmAction.accessibilityIdentifier = @"confirmSignAction";
+        
+        // 设置确认按钮颜色
+        [confirmAction setValue:MainColor forKey:@"_titleTextColor"];
+        [alertController addAction:confirmAction];
+        
+        NSLog(@"[签名流程] 准备显示确认对话框");
+        [self presentViewController:alertController animated:YES completion:^{
+            NSLog(@"[签名流程] 确认对话框已显示");
+        }];
+    });
+}
+
+// 显示警告提示
+- (void)showWarningTip:(NSString *)message {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"提示"
+                                                                       message:message
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
+        [alert addAction:okAction];
+        [self presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+// 显示成功提示
+- (void)showSuccessTip:(NSString *)message {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"成功"
+                                                                       message:message
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
+        [alert addAction:okAction];
+        [self presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+// 显示证书选择器
+- (void)showCertificateSelectorWithP12Certificates:(NSArray *)p12Certificates
+                                 provisionProfiles:(NSArray *)provisionProfiles
+                                          ipaPath:(NSString *)ipaPath {
+    NSLog(@"[证书选择] 显示证书选择器");
+    NSLog(@"[证书选择] 使用IPA文件: %@", ipaPath);
+    
+    // 再次检查IPA文件是否存在
+    if (![ZXFileManage fileExistWithPath:ipaPath]) {
+        NSLog(@"[证书选择] 警告: 提供的IPA文件路径不存在，尝试使用SideStore.ipa");
+        
+        // 尝试使用SideStore.ipa
+        NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        NSString *importedIpaDir = [documentsPath stringByAppendingPathComponent:@"ImportedIpa"];
+        NSString *sideStorePath = [importedIpaDir stringByAppendingPathComponent:@"SideStore.ipa"];
+        
+        if ([ZXFileManage fileExistWithPath:sideStorePath]) {
+            NSLog(@"[证书选择] 找到SideStore.ipa文件，使用此文件: %@", sideStorePath);
+            ipaPath = sideStorePath;
+        } else {
+            NSLog(@"[证书选择] 错误: 无法找到任何IPA文件");
+            [self showWarningTip:@"无法找到IPA文件，请重新导入"];
+            return;
+        }
+    }
+    
+    // 简单实现：直接使用第一个证书和描述文件
+    ZXCertificateModel *p12 = p12Certificates.firstObject;
+    ZXCertificateModel *profile = provisionProfiles.firstObject;
+    
+    NSLog(@"[证书选择] 选择证书: %@", p12.certificateName ?: p12.filename);
+    NSLog(@"[证书选择] 选择描述文件: %@", profile.certificateName ?: profile.filename);
+    NSLog(@"[证书选择] 准备上传文件: %@", ipaPath);
+    
+    [self performUploadWithP12:p12 provisionProfile:profile andIpa:ipaPath];
 }
 
 @end

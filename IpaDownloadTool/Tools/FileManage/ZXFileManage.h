@@ -44,6 +44,10 @@ typedef enum {
 +(BOOL)unzipFileAtPath:(NSString *)path toDestination:(NSString *)destination;
 ///判断文件是否存在
 +(BOOL)fileExistWithPath:(NSString *)path;
+///创建目录
++(BOOL)createDirectory:(NSString *)path;
+///获取目录内容
++(NSArray *)getContentsOfDirectory:(NSString *)path;
 @end
 
 NS_ASSUME_NONNULL_END

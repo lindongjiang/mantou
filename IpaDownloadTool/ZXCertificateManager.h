@@ -18,6 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *teamID; // 团队ID
 @property (nonatomic, copy) NSString *certificateName; // 证书名称
 @property (nonatomic, strong) NSDate *expirationDate; // 证书过期时间
+@property (nonatomic, copy) NSString *pwd; // P12证书密码
 
 @end
 

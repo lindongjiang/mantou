@@ -7,18 +7,21 @@
 //
 
 #import <UIKit/UIKit.h>
+#import "ZXCertificateManageVC.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface ZXIpaImportVC : UIViewController <UITableViewDelegate, UITableViewDataSource, UIDocumentPickerDelegate>
 
+@property (nonatomic, strong) NSMutableArray *ipaList;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UIButton *importButton;
-@property (nonatomic, strong) NSMutableArray *ipaList;
 
-// 显示空视图
+// 导入IPA文件
+- (void)importIpaFile;
+
+// 显示和隐藏空视图
 - (void)showEmptyView;
-// 隐藏空视图
 - (void)hideEmptyView;
 
 @end

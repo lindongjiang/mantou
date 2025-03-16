@@ -7,11 +7,10 @@
 //
 
 #import "ZXTabBarController.h"
-#import "ZXIpaGetVC.h"
-#import "ZXLocalIpaVC.h"
-#import "ZXIpaHisVC.h"
-#import "ZXIpaAboutVC.h"
-#import "ZXIpaImportVC.h"
+#import "ZXIpaGet(获取应用信息)/ZXIpaGetVC.h"
+#import "ZXIpaHis(历史记录)/ZXIpaHisVC.h"
+#import "ZXIpaAbout(关于IPA提取器)/ZXIpaAboutVC.h"
+#import "ZXIpaImport/ZXIpaImportVC.h"
 #import "ZXCertificateManageVC.h"
 #import "ZXIpaDownloadVC.h"
 #import "ZXSignedIpaVC.h"

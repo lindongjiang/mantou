@@ -121,4 +121,26 @@
         return NO;
     }
 }
+
++ (BOOL)createDirectory:(NSString *)path {
+    NSError *error = nil;
+    BOOL success = [[NSFileManager defaultManager] createDirectoryAtPath:path 
+                                            withIntermediateDirectories:YES 
+                                                             attributes:nil 
+                                                                  error:&error];
+    if (!success) {
+        NSLog(@"创建目录失败: %@, 错误: %@", path, error.localizedDescription);
+    }
+    return success;
+}
+
++ (NSArray *)getContentsOfDirectory:(NSString *)path {
+    NSError *error = nil;
+    NSArray *contents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:path error:&error];
+    if (error) {
+        NSLog(@"获取目录内容失败: %@, 错误: %@", path, error.localizedDescription);
+        return @[];
+    }
+    return contents;
+}
 @end

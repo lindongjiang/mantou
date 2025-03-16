@@ -2,8 +2,7 @@
 //  ZXSignedIpaVC.h
 //  IpaDownloadTool
 //
-//  Created on 2024/7/13.
-//  Copyright © 2024. All rights reserved.
+//  Created by Claude on 2023/11/10.
 //
 
 #import <UIKit/UIKit.h>

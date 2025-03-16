@@ -80,7 +80,9 @@
 		79408D6F2D85140F0048D607 /* ZXCertificateManageVC.m in Sources */ = {isa = PBXBuildFile; fileRef = 79408D6D2D85140F0048D607 /* ZXCertificateManageVC.m */; };
 		79408D722D8519EA0048D607 /* ZXIpaDownloadVC.m in Sources */ = {isa = PBXBuildFile; fileRef = 79408D712D8519EA0048D607 /* ZXIpaDownloadVC.m */; };
 		79408D782D8529310048D607 /* ZXSignedIpaVC.m in Sources */ = {isa = PBXBuildFile; fileRef = 79408D762D8529310048D607 /* ZXSignedIpaVC.m */; };
-		796AD9422D8412E7003674BE /* ZXIpaImportVC.m in Sources */ = {isa = PBXBuildFile; fileRef = 796AD9412D8412E7003674BE /* ZXIpaImportVC.m */; };
+		79408D7F2D8664870048D607 /* ZXIpaImportVC.m in Sources */ = {isa = PBXBuildFile; fileRef = 79408D7E2D8664870048D607 /* ZXIpaImportVC.m */; };
+		79408D832D8664DC0048D607 /* ZXIpaManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 79408D822D8664DC0048D607 /* ZXIpaManager.m */; };
+		79408D862D8665750048D607 /* ZXIpaCell.m in Sources */ = {isa = PBXBuildFile; fileRef = 79408D842D8665750048D607 /* ZXIpaCell.m */; };
 		79E1433F2D83FCC400231BB1 /* ZXTabBarController.m in Sources */ = {isa = PBXBuildFile; fileRef = 79E1433D2D83FCC400231BB1 /* ZXTabBarController.m */; };
 		817ED973205571CCC5CD8E1E /* libPods-IpaDownloadTool.a in Frameworks */ = {isa = PBXBuildFile; fileRef = BD04927DA37E844A4569D3F6 /* libPods-IpaDownloadTool.a */; };
 /* End PBXBuildFile section */
@@ -252,8 +254,12 @@
 		79408D712D8519EA0048D607 /* ZXIpaDownloadVC.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = ZXIpaDownloadVC.m; sourceTree = "<group>"; };
 		79408D762D8529310048D607 /* ZXSignedIpaVC.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = ZXSignedIpaVC.m; sourceTree = "<group>"; };
 		79408D772D8529310048D607 /* ZXSignedIpaVC.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ZXSignedIpaVC.h; sourceTree = "<group>"; };
-		796AD9402D8412E7003674BE /* ZXIpaImportVC.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ZXIpaImportVC.h; sourceTree = "<group>"; };
-		796AD9412D8412E7003674BE /* ZXIpaImportVC.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = ZXIpaImportVC.m; sourceTree = "<group>"; };
+		79408D7D2D8664870048D607 /* ZXIpaImportVC.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ZXIpaImportVC.h; sourceTree = "<group>"; };
+		79408D7E2D8664870048D607 /* ZXIpaImportVC.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = ZXIpaImportVC.m; sourceTree = "<group>"; };
+		79408D812D8664DC0048D607 /* ZXIpaManager.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ZXIpaManager.h; sourceTree = "<group>"; };
+		79408D822D8664DC0048D607 /* ZXIpaManager.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = ZXIpaManager.m; sourceTree = "<group>"; };
+		79408D842D8665750048D607 /* ZXIpaCell.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = ZXIpaCell.m; sourceTree = "<group>"; };
+		79408D852D8665750048D607 /* ZXIpaCell.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ZXIpaCell.h; sourceTree = "<group>"; };
 		79E1433D2D83FCC400231BB1 /* ZXTabBarController.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = ZXTabBarController.m; sourceTree = "<group>"; };
 		79E1433E2D83FCC400231BB1 /* ZXTabBarController.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ZXTabBarController.h; sourceTree = "<group>"; };
 		BD04927DA37E844A4569D3F6 /* libPods-IpaDownloadTool.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-IpaDownloadTool.a"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -444,6 +450,8 @@
 		741B92972275943100F24EED /* IpaDownloadTool */ = {
 			isa = PBXGroup;
 			children = (
+				79408D802D8664C50048D607 /* ZXIpaManager */,
+				79408D7C2D86642E0048D607 /* ZXIpaImport */,
 				79408D752D85290E0048D607 /* ZXSignedIpa */,
 				79408D702D8519EA0048D607 /* ZXIpaDownloadVC.h */,
 				79408D712D8519EA0048D607 /* ZXIpaDownloadVC.m */,
@@ -451,7 +459,6 @@
 				79408D6B2D85140F0048D607 /* ZXCertificateManager.m */,
 				79408D6A2D85140F0048D607 /* ZXCertificateManageVC.h */,
 				79408D6D2D85140F0048D607 /* ZXCertificateManageVC.m */,
-				796AD9362D840D37003674BE /* ZXIpamport */,
 				79E1433E2D83FCC400231BB1 /* ZXTabBarController.h */,
 				79E1433D2D83FCC400231BB1 /* ZXTabBarController.m */,
 				741B92F22275F8FF00F24EED /* ZXIpaGet(获取应用信息) */,
@@ -757,19 +764,30 @@
 		79408D752D85290E0048D607 /* ZXSignedIpa */ = {
 			isa = PBXGroup;
 			children = (
+				79408D852D8665750048D607 /* ZXIpaCell.h */,
+				79408D842D8665750048D607 /* ZXIpaCell.m */,
 				79408D772D8529310048D607 /* ZXSignedIpaVC.h */,
 				79408D762D8529310048D607 /* ZXSignedIpaVC.m */,
 			);
 			path = ZXSignedIpa;
 			sourceTree = "<group>";
 		};
-		796AD9362D840D37003674BE /* ZXIpamport */ = {
+		79408D7C2D86642E0048D607 /* ZXIpaImport */ = {
 			isa = PBXGroup;
 			children = (
-				796AD9402D8412E7003674BE /* ZXIpaImportVC.h */,
-				796AD9412D8412E7003674BE /* ZXIpaImportVC.m */,
+				79408D7D2D8664870048D607 /* ZXIpaImportVC.h */,
+				79408D7E2D8664870048D607 /* ZXIpaImportVC.m */,
 			);
-			path = ZXIpamport;
+			path = ZXIpaImport;
+			sourceTree = "<group>";
+		};
+		79408D802D8664C50048D607 /* ZXIpaManager */ = {
+			isa = PBXGroup;
+			children = (
+				79408D812D8664DC0048D607 /* ZXIpaManager.h */,
+				79408D822D8664DC0048D607 /* ZXIpaManager.m */,
+			);
+			path = ZXIpaManager;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -960,17 +978,18 @@
 				04C9938425B2A0D80041B15E /* ZXIpaUrlHisCell.m in Sources */,
 				741B930C22760BC800F24EED /* ZXIpaDetailModel.m in Sources */,
 				741B92A82275943700F24EED /* main.m in Sources */,
+				79408D862D8665750048D607 /* ZXIpaCell.m in Sources */,
 				7436DAA622768B15007AA858 /* SGQRCodeGenerateManager.m in Sources */,
 				7436DADD22771E20007AA858 /* ZXFileManage.m in Sources */,
 				7436DAB922769D81007AA858 /* ZXPlaceView.m in Sources */,
 				741B92FC2276025A00F24EED /* ALToastView.m in Sources */,
 				7436DAA422768B15007AA858 /* SGQRCodeScanningView.m in Sources */,
 				04DED2F628FBBEED00E473C1 /* ZXIpaAboutVC.m in Sources */,
+				79408D7F2D8664870048D607 /* ZXIpaImportVC.m in Sources */,
 				7436DAA322768B15007AA858 /* ScanSuccessJumpVC.m in Sources */,
 				7436DAA822768B15007AA858 /* SYFavoriteButton.m in Sources */,
 				79E1433F2D83FCC400231BB1 /* ZXTabBarController.m in Sources */,
 				041C40B729E053A600B611EE /* ZXMPRegularVC.m in Sources */,
-				796AD9422D8412E7003674BE /* ZXIpaImportVC.m in Sources */,
 				04E62ACB28FBCF750063BD5E /* ZXIpaAboutModel.m in Sources */,
 				04C9939E25B2A4D10041B15E /* ZXIpaUrlHisModel.m in Sources */,
 				79408D782D8529310048D607 /* ZXSignedIpaVC.m in Sources */,
@@ -998,6 +1017,7 @@
 				04C9937925B2A0910041B15E /* ZXIpaUrlHisVC.m in Sources */,
 				047CDBA629E11E840013AEAE /* UIViewController+ZXAlert.m in Sources */,
 				7436DAD92276D19E007AA858 /* ZXLocalIpaDownloadModel.m in Sources */,
+				79408D832D8664DC0048D607 /* ZXIpaManager.m in Sources */,
 				7436DAB2227699E7007AA858 /* UIImage+Rendering.m in Sources */,
 				7436DABF2276CAE4007AA858 /* NSString+ZXMD5.m in Sources */,
 				7436DAE722776218007AA858 /* NSObject+ZXKVO.m in Sources */,
