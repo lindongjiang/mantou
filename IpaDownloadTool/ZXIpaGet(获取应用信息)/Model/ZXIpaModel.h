@@ -33,6 +33,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (assign, nonatomic) BOOL isSigned;
 ///签名时间
 @property (copy, nonatomic) NSString *signedTime;
+///安装链接
+@property (copy, nonatomic) NSString *installLink;
 -(instancetype)initWithDic:(NSDictionary *)dic;
 @end
 
