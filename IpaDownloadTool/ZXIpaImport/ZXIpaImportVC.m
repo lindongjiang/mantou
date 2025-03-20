@@ -209,8 +209,8 @@
         NSLog(@"[加载] 创建导入IPA目录");
     }
     
-    // 从数据库中加载所有未签名的IPA信息
-    NSArray *dbIpaModels = [ZXIpaModel zx_dbQuaryWhere:@"isSigned = 0 OR isSigned IS NULL"];
+    // 从数据库中加载所有IPA记录，不限制是否已签名
+    NSArray *dbIpaModels = [ZXIpaModel zx_dbQuaryAll];
     NSLog(@"[加载] 从数据库中加载了%lu个IPA记录", (unsigned long)dbIpaModels.count);
     
     // 获取ImportedIpa目录中的所有文件
@@ -1548,6 +1548,16 @@
             [self signIpaFile:ipaModel];
         }]];
         
+        // 如果已经有安装链接，添加直接安装选项
+        if (ipaModel.installLink && ipaModel.installLink.length > 0) {
+            [actionSheet addAction:[UIAlertAction actionWithTitle:@"直接安装"
+                                                          style:UIAlertActionStyleDefault
+                                                        handler:^(UIAlertAction * _Nonnull action) {
+                // 调用直接安装方法
+                [self installIpaWithLink:ipaModel.installLink];
+            }]];
+        }
+        
         // 添加直接签名选项（使用SideStore.ipa）
         [actionSheet addAction:[UIAlertAction actionWithTitle:@"直接签名(测试)"
                                                        style:UIAlertActionStyleDefault
@@ -2347,7 +2357,15 @@
                             [self downloadSignedIpa:downloadUrl withOriginalIpa:ipaModel];
                         } else if (installLink) {
                             NSLog(@"[签名上传] 获取到安装链接: %@", installLink);
-                            // 可以处理安装链接，比如显示二维码
+                            // 保存安装链接到IPA模型中
+                            ipaModel.installLink = installLink;
+                            ipaModel.isSigned = YES;
+                            ipaModel.signedTime = [self currentTimeString];
+                            
+                            // 保存更新后的IPA信息到数据库
+                            [ipaModel zx_dbSave];
+                            
+                            // 显示成功消息
                             [ALToastView showToastWithText:@"签名成功，获取到安装链接"];
                         } else {
                             [ALToastView showToastWithText:@"签名请求发送成功，请等待签名完成"];
@@ -3256,23 +3274,16 @@
                             [self downloadSignedIpa:downloadUrl withOriginalIpa:ipaModel];
                         } else if (installLink) {
                             NSLog(@"[上传] 获取到安装链接: %@", installLink);
-                            // 从installLink中提取plist URL
-                            NSString *plistUrlString = nil;
-                            NSURLComponents *components = [NSURLComponents componentsWithString:installLink];
-                            for (NSURLQueryItem *item in components.queryItems) {
-                                if ([item.name isEqualToString:@"url"]) {
-                                    plistUrlString = [item.value stringByRemovingPercentEncoding];
-                                    break;
-                                }
-                            }
+                            // 保存安装链接到IPA模型中
+                            ipaModel.installLink = installLink;
+                            ipaModel.isSigned = YES;
+                            ipaModel.signedTime = [self currentTimeString];
                             
-                            if (plistUrlString) {
-                                NSLog(@"[上传] 提取到plist URL: %@", plistUrlString);
-                                // 下载plist文件以获取真实的IPA下载链接
-                                [self downloadPlistAndExtractIpaUrl:plistUrlString withOriginalIpa:ipaModel];
-                            } else {
-                                [ALToastView showToastWithText:@"签名成功，但无法提取plist URL"];
-                            }
+                            // 保存更新后的IPA信息到数据库
+                            [ipaModel zx_dbSave];
+                            
+                            // 显示成功消息
+                            [ALToastView showToastWithText:@"签名成功，获取到安装链接"];
                         } else {
                             [ALToastView showToastWithText:@"签名请求发送成功，请等待签名完成"];
                         }
@@ -3600,6 +3611,33 @@
     [self hideEmptyView];
     
     [ALToastView showToastWithText:@"IPA导入成功"];
+}
+
+#pragma mark - 安装IPA
+- (void)installIpaWithLink:(NSString *)installLink {
+    if (!installLink || installLink.length == 0) {
+        [ALToastView showToastWithText:@"安装链接无效"];
+        return;
+    }
+    
+    NSLog(@"[安装] 使用链接安装IPA: %@", installLink);
+    
+    // 打开安装链接
+    NSURL *url = [NSURL URLWithString:installLink];
+    if ([[UIApplication sharedApplication] canOpenURL:url]) {
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:^(BOOL success) {
+            if (success) {
+                NSLog(@"[安装] 成功打开安装链接");
+                [ALToastView showToastWithText:@"安装中，请在设备上确认"];
+            } else {
+                NSLog(@"[安装] 无法打开安装链接");
+                [ALToastView showToastWithText:@"无法打开安装链接"];
+            }
+        }];
+    } else {
+        NSLog(@"[安装] 设备不支持打开此URL");
+        [ALToastView showToastWithText:@"设备不支持打开此URL"];
+    }
 }
 
 @end
