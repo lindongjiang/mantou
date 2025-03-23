@@ -27,6 +27,7 @@
 // 添加辅助方法声明
 - (void)showWarningTip:(NSString *)message;
 - (void)showSuccessTip:(NSString *)message;
+- (void)showErrorTip:(NSString *)message;
 - (void)showCertificateSelectorWithP12Certificates:(NSArray *)p12Certificates provisionProfiles:(NSArray *)provisionProfiles ipaPath:(NSString *)ipaPath;
 @end
 
@@ -697,19 +698,36 @@
 - (void)importSignedIpa:(NSString *)ipaPath {
     NSLog(@"[签名下载] 导入签名后的IPA: %@", ipaPath);
     
+    // 检查是否已存在相同路径的IPA记录
+    NSArray *existingIpas = [ZXIpaModel zx_dbQuaryWhere:[NSString stringWithFormat:@"localPath = '%@'", ipaPath]];
+    
+    if (existingIpas.count > 0) {
+        NSLog(@"[签名下载] 数据库中已存在该IPA记录，跳过导入");
+        [self showSuccessTip:@"IPA已存在，无需重复导入"];
+        return;
+    }
+    
     // 解析IPA文件
     ZXIpaModel *ipaModel = [self parseIpaFile:ipaPath];
     
     if (ipaModel) {
         NSLog(@"[签名下载] IPA解析成功: %@", ipaModel.title);
         
+        // 为已签名IPA添加标记
+        ipaModel.title = [NSString stringWithFormat:@"%@(已签名)", ipaModel.title];
+        ipaModel.isSigned = YES;
+        ipaModel.signedTime = [self currentTimeString];
+        
         // 保存到数据库
         [self saveSignedIpaToDatabase:ipaModel];
         
         // 通知更新UI
         [[NSNotificationCenter defaultCenter] postNotificationName:@"ZXImportedIpaUpdated" object:nil];
+        
+        [self showSuccessTip:@"已签名IPA已成功导入"];
     } else {
         NSLog(@"[签名下载] IPA解析失败");
+        [self showWarningTip:@"导入失败，无法解析IPA文件"];
     }
 }
 
@@ -728,36 +746,28 @@
 }
 
 - (void)saveSignedIpaToDatabase:(ZXIpaModel *)ipaModel {
-    if (!ipaModel) {
+    // 确保IPA模型有效
+    if (!ipaModel || !ipaModel.localPath) {
+        NSLog(@"[签名下载] 无效的IPA模型");
         return;
     }
     
-    NSLog(@"[签名下载] 保存已签名的IPA信息到数据库: %@", ipaModel.title);
-    
-    // 检查是否已存在相同的IPA
-    NSArray *sameArr = [ZXIpaModel zx_dbQuaryWhere:[NSString stringWithFormat:@"bundleId='%@' AND isSigned=1", ipaModel.bundleId]];
-    if (sameArr.count) {
-        NSLog(@"[签名下载] 数据库中已存在相同Bundle ID的已签名记录，删除旧记录: %@", ipaModel.bundleId);
-        [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@' AND isSigned=1", ipaModel.bundleId]];
-    }
-    
-    // 生成唯一标识
+    // 生成唯一标识符
     if (!ipaModel.sign) {
-        NSString *orgSign = [NSString stringWithFormat:@"%@%@%@%@", 
-                              ipaModel.bundleId, 
-                              ipaModel.version, 
-                              ipaModel.localPath,
-                              @"signed"];
-        ipaModel.sign = [orgSign md5Str];
+        NSString *uniqueString = [NSString stringWithFormat:@"%@_%@_signed_%@", 
+                                 ipaModel.bundleId ?: @"unknown", 
+                                 ipaModel.version ?: @"unknown", 
+                                 [self currentTimeString]];
+        ipaModel.sign = [uniqueString md5Str];
     }
     
-    // 将IPA信息保存到数据库
-    BOOL saveResult = [ipaModel zx_dbSave];
+    // 使用IpaManager保存已签名IPA
+    BOOL success = [[ZXIpaManager sharedManager] saveSignedIpa:ipaModel];
     
-    if (saveResult) {
-        NSLog(@"[签名下载] 成功保存已签名IPA信息到数据库");
+    if (success) {
+        NSLog(@"[签名下载] IPA成功保存到数据库: %@", ipaModel.title);
     } else {
-        NSLog(@"[签名下载] 保存已签名IPA信息到数据库失败");
+        NSLog(@"[签名下载] 保存IPA到数据库失败");
     }
 }
 
@@ -931,6 +941,57 @@
     NSLog(@"[证书选择] 准备上传文件: %@", ipaPath);
     
     [self performUploadWithP12:p12 provisionProfile:profile andIpa:ipaPath];
+}
+
+// 添加显示错误提示方法
+- (void)showErrorTip:(NSString *)message {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"错误"
+                                                                       message:message
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil];
+        [alert addAction:okAction];
+        [self presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+// 添加获取当前时间字符串的方法
+- (NSString *)currentTimeString {
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    return [formatter stringFromDate:[NSDate date]];
+}
+
+// 实现selectProvisionProfile:forP12:andIpa:方法
+- (void)selectProvisionProfile:(NSArray<ZXCertificateModel *> *)profiles forP12:(ZXCertificateModel *)p12Cert andIpa:(ZXIpaModel *)ipaModel {
+    UIAlertController *profileSelector = [UIAlertController alertControllerWithTitle:@"选择描述文件"
+                                                                             message:@"请选择用于签名的描述文件"
+                                                                      preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    // 添加描述文件选项
+    for (ZXCertificateModel *profile in profiles) {
+        NSString *title = profile.certificateName ?: profile.filename;
+        
+        [profileSelector addAction:[UIAlertAction actionWithTitle:title
+                                                           style:UIAlertActionStyleDefault
+                                                         handler:^(UIAlertAction * _Nonnull action) {
+            [self startSigningWithP12:p12Cert provisionProfile:profile andIpa:ipaModel];
+        }]];
+    }
+    
+    // 添加取消按钮
+    [profileSelector addAction:[UIAlertAction actionWithTitle:@"取消"
+                                                       style:UIAlertActionStyleCancel
+                                                     handler:nil]];
+    
+    // 在iPad上需要设置弹出位置
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        profileSelector.popoverPresentationController.sourceView = self.view;
+        profileSelector.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
+        profileSelector.popoverPresentationController.permittedArrowDirections = 0;
+    }
+    
+    [self presentViewController:profileSelector animated:YES completion:nil];
 }
 
 @end

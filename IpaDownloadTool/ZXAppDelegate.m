@@ -12,6 +12,9 @@
 
 @implementation ZXAppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    // 确保NSUserDefaults使用正确的域名和容器
+    [[NSUserDefaults standardUserDefaults] addSuiteNamed:@"cn.zxlee.IpaDownloadTool"];
+    
     UIWindow *window = [[UIWindow alloc]initWithFrame:[UIScreen mainScreen].bounds];
     
     // 使用TabBarController作为根视图控制器

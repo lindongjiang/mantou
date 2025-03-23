@@ -38,8 +38,19 @@
         [ALToastView showToastWithText:@"正在导入文件..."];
     });
     
+    // 获取现有文件的集合，防止重复导入
+    NSMutableSet *existingIpaFiles = [NSMutableSet set];
+    NSArray *existingFiles = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:importedIpaPath error:nil];
+    for (NSString *file in existingFiles) {
+        if ([file.pathExtension.lowercaseString isEqualToString:@"ipa"]) {
+            [existingIpaFiles addObject:[file lowercaseString]];
+        }
+    }
+    
     // 在后台线程处理文件
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSMutableArray *successfulImports = [NSMutableArray array];
+        
         for (NSURL *url in urls) {
             // 获取安全访问权限
             BOOL securityAccessGranted = NO;
@@ -64,23 +75,47 @@
                 NSString *safeFileName = [self createSafeFileName:fileName];
                 NSString *destinationPath = [importedIpaPath stringByAppendingPathComponent:safeFileName];
                 
+                // 检查是否已经导入过同样的文件（通过文件名比较）
+                if ([existingIpaFiles containsObject:[safeFileName lowercaseString]]) {
+                    // 检查是否是完全相同的文件（通过MD5或文件大小比较）
+                    NSString *sourceHash = [self fileHashForPath:[url path]];
+                    NSString *destHash = [self fileHashForPath:destinationPath];
+                    
+                    if ([sourceHash isEqualToString:destHash]) {
+                        NSLog(@"文件已存在且内容相同，跳过导入: %@", safeFileName);
+                        continue;
+                    }
+                    
+                    NSLog(@"同名文件已存在但内容不同，尝试使用新文件名");
+                    // 创建带时间戳的文件名
+                    NSString *fileNameWithoutExt = [safeFileName stringByDeletingPathExtension];
+                    NSString *timestamp = [NSString stringWithFormat:@"%.0f", [NSDate date].timeIntervalSince1970];
+                    safeFileName = [[fileNameWithoutExt stringByAppendingString:@"_"] stringByAppendingString:timestamp];
+                    safeFileName = [safeFileName stringByAppendingPathExtension:@"ipa"];
+                    destinationPath = [importedIpaPath stringByAppendingPathComponent:safeFileName];
+                }
+                
                 // 如果目标文件已存在，先删除
                 if ([[NSFileManager defaultManager] fileExistsAtPath:destinationPath]) {
                     NSError *removeError = nil;
                     if (![[NSFileManager defaultManager] removeItemAtPath:destinationPath error:&removeError]) {
                         NSLog(@"删除已存在的文件失败: %@", removeError.localizedDescription);
-                    continue;
-                }
+                        continue;
+                    }
                 }
                 
                 // 复制文件到导入目录
                 NSError *copyError = nil;
                 if ([[NSFileManager defaultManager] copyItemAtURL:url toURL:[NSURL fileURLWithPath:destinationPath] error:&copyError]) {
-                NSLog(@"成功导入文件到: %@", destinationPath);
-                
-                // 解析IPA文件
-                ZXIpaModel *ipaModel = [self parseIpaFile:destinationPath];
-                if (ipaModel) {
+                    NSLog(@"成功导入文件到: %@", destinationPath);
+                    
+                    // 记录已导入的文件，防止在同一批次重复导入
+                    [existingIpaFiles addObject:[safeFileName lowercaseString]];
+                    [successfulImports addObject:destinationPath];
+                    
+                    // 解析IPA文件
+                    ZXIpaModel *ipaModel = [self parseIpaFile:destinationPath];
+                    if (ipaModel) {
                         // 确保设置正确的本地路径
                         ipaModel.localPath = destinationPath;
                         NSLog(@"设置IPA文件本地路径为: %@", destinationPath);
@@ -98,10 +133,10 @@
                         // 确保设置了时间
                         if (!ipaModel.time || [ipaModel.time isEqualToString:@"未知日期"]) {
                             ipaModel.time = [self currentTimeString];
-                    }
-                    
-                    // 保存到数据库
-                    [self saveIpaInfoToDatabase:ipaModel];
+                        }
+                        
+                        // 保存到数据库
+                        [self saveIpaInfoToDatabase:ipaModel];
                         
                         // 缓存文件大小
                         NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:destinationPath error:nil];
@@ -121,11 +156,11 @@
                                 [self hideEmptyView];
                             }
                         });
-                    
-                    NSLog(@"成功解析并保存IPA信息: %@", ipaModel.title);
-                } else {
+                        
+                        NSLog(@"成功解析并保存IPA信息: %@", ipaModel.title);
+                    } else {
                         NSLog(@"解析IPA文件失败");
-                }
+                    }
                 } else {
                     NSLog(@"复制文件失败: %@", copyError.localizedDescription);
                 }
@@ -133,9 +168,9 @@
                 // 停止访问安全资源
                 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
                 if (@available(iOS 11.0, *)) {
-                if (securityAccessGranted) {
-                    [url stopAccessingSecurityScopedResource];
-                }
+                    if (securityAccessGranted) {
+                        [url stopAccessingSecurityScopedResource];
+                    }
                 }
                 #endif
             }
@@ -143,7 +178,14 @@
         
         // 在主线程更新UI
         dispatch_async(dispatch_get_main_queue(), ^{
-            [ALToastView showToastWithText:@"文件导入完成"];
+            if (successfulImports.count > 0) {
+                NSString *message = successfulImports.count == 1 ? 
+                                   @"文件导入完成" : 
+                                   [NSString stringWithFormat:@"%lu个文件导入完成", (unsigned long)successfulImports.count];
+                [ALToastView showToastWithText:message];
+            } else {
+                [ALToastView showToastWithText:@"没有新文件导入"];
+            }
             
             // 强制同步数据库
             [[NSUserDefaults standardUserDefaults] synchronize];
@@ -188,6 +230,9 @@
 - (void)loadLocalIpaFiles {
     NSLog(@"[加载] 开始加载本地IPA文件");
     
+    // 确保使用正确的用户默认设置域
+    [[NSUserDefaults standardUserDefaults] addSuiteNamed:@"IpaDownloadToolUserDefaults"];
+    
     // 初始化或清空IPA列表
     if (!self.ipaList) {
         self.ipaList = [NSMutableArray array];
@@ -220,208 +265,39 @@
     
     if (error) {
         NSLog(@"[加载] 读取ImportedIpa目录失败: %@", error.localizedDescription);
-    } else {
-        NSLog(@"[加载] ImportedIpa目录中有%lu个文件", (unsigned long)importedFiles.count);
-        
-        // 创建文件名到路径的映射
-        NSMutableDictionary *fileNameToPath = [NSMutableDictionary dictionary];
-        for (NSString *fileName in importedFiles) {
-            if ([fileName.pathExtension.lowercaseString isEqualToString:@"ipa"]) {
-                NSString *fullPath = [importedIpaPath stringByAppendingPathComponent:fileName];
-                fileNameToPath[fileName] = fullPath;
-            }
-        }
-        
-        // 处理每个数据库记录
-    for (ZXIpaModel *ipaModel in dbIpaModels) {
-        // 检查是否是直接引用的外部文件
-        BOOL isExternalFile = [ipaModel.bundleId hasPrefix:@"direct."];
-        
-        if (isExternalFile) {
-            NSLog(@"[加载] 处理外部文件记录: %@", ipaModel.bundleId);
-            // 从NSUserDefaults获取书签数据
-            NSString *bookmarkKey = [NSString stringWithFormat:@"bookmark_%@", ipaModel.bundleId];
-            NSData *bookmarkData = [[NSUserDefaults standardUserDefaults] objectForKey:bookmarkKey];
-            
-            if (bookmarkData) {
-                NSLog(@"[加载] 尝试恢复书签: %@", bookmarkKey);
-                
-                NSError *bookmarkError = nil;
-                BOOL stale = NO;
-                NSURL *fileURL = [NSURL URLByResolvingBookmarkData:bookmarkData
-                                                              options:NSURLBookmarkResolutionWithoutUI
-                                                    relativeToURL:nil
-                                              bookmarkDataIsStale:&stale
-                                                            error:&bookmarkError];
-                
-                if (bookmarkError) {
-                    NSLog(@"[加载] 解析书签失败: %@", bookmarkError.localizedDescription);
-                    // 删除无效的书签和数据库记录
-                    [[NSUserDefaults standardUserDefaults] removeObjectForKey:bookmarkKey];
-                    [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
-                    continue;
-                }
-                
-                if (stale) {
-                    NSLog(@"[加载] 书签已过期，需要更新");
-                    // 此处可以尝试更新书签，但通常会失败，因为需要用户重新授权
-                    [[NSUserDefaults standardUserDefaults] removeObjectForKey:bookmarkKey];
-                    [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
-                    continue;
-                }
-                
-                    BOOL accessGranted = NO;
-                    
-                    #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
-                    if (@available(iOS 11.0, *)) {
-                        accessGranted = [fileURL startAccessingSecurityScopedResource];
-                    }
-                    #endif
-                
-                @try {
-                    if (accessGranted) {
-                        NSString *path = [fileURL path];
-                        NSLog(@"[加载] 成功访问外部文件: %@", path);
-                        
-                        // 检查文件是否仍然存在
-                        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-                            NSLog(@"[加载] 外部文件仍然存在，添加到列表");
-                            
-                            // 更新文件路径（以防万一）
-                            ipaModel.localPath = path;
-                            ipaModel.downloadUrl = [fileURL absoluteString];
-                            
-                                // 从缓存中获取文件大小
-                                NSString *fileSizeKey = [NSString stringWithFormat:@"fileSize_%@", ipaModel.sign];
-                                NSString *sizeStr = [[NSUserDefaults standardUserDefaults] objectForKey:fileSizeKey];
-                                
-                                if (!sizeStr) {
-                                    // 如果缓存中没有，重新获取文件大小
-                            NSError *attributesError = nil;
-                            NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:&attributesError];
-                            
-                            if (!attributesError && attributes) {
-                                // 更新文件大小信息
-                                long long fileSize = [attributes fileSize];
-                                        sizeStr = [self formatFileSize:fileSize];
-                                        
-                                        // 缓存文件大小
-                                        [[NSUserDefaults standardUserDefaults] setObject:sizeStr forKey:fileSizeKey];
-                                        [[NSUserDefaults standardUserDefaults] synchronize];
-                                    }
-                                }
-                                
-                                // 在自定义属性中存储文件大小字符串
-                                objc_setAssociatedObject(ipaModel, "fileSize", sizeStr, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                            
-                            [self.ipaList addObject:ipaModel];
-                        } else {
-                            NSLog(@"[加载] 外部文件不再存在，删除书签和数据库记录");
-                            [[NSUserDefaults standardUserDefaults] removeObjectForKey:bookmarkKey];
-                            [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
-                        }
-                    }
-                } @catch (NSException *exception) {
-                    NSLog(@"[加载] 处理书签时发生异常: %@", exception);
-                } @finally {
-                        #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
-                        if (@available(iOS 11.0, *)) {
-                    if (accessGranted) {
-                        [fileURL stopAccessingSecurityScopedResource];
-                    }
-                        }
-                        #endif
+        return;
+    }
+    
+    // 创建路径到数据库记录的映射，防止重复添加相同文件
+    NSMutableDictionary *pathToModelDict = [NSMutableDictionary dictionary];
+    NSMutableSet *processedPaths = [NSMutableSet set];
+    
+    // 先处理数据库中的记录
+    for (ZXIpaModel *model in dbIpaModels) {
+        if (model.localPath) {
+            // 检查文件是否存在
+            if ([fileManager fileExistsAtPath:model.localPath]) {
+                // 检查是否已处理过此路径
+                if (![processedPaths containsObject:model.localPath]) {
+                    [pathToModelDict setObject:model forKey:model.localPath];
+                    [processedPaths addObject:model.localPath];
+                    NSLog(@"[加载] 添加数据库记录到映射: %@", model.localPath);
+                } else {
+                    NSLog(@"[加载] 跳过重复路径的数据库记录: %@", model.localPath);
                 }
             } else {
-                NSLog(@"[加载] 未找到书签数据，从数据库中删除记录");
-                [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@'", ipaModel.bundleId]];
-            }
-        } else {
-            // 处理复制到沙盒的IPA文件
-            NSLog(@"[加载] 处理本地IPA文件: %@, 路径: %@", ipaModel.title, ipaModel.localPath);
-            
-                BOOL fileExists = [ZXFileManage fileExistWithPath:ipaModel.localPath];
-                
-                if (!fileExists) {
-                    // 尝试在ImportedIpa目录中查找文件
-                    NSString *fileName = [ipaModel.localPath lastPathComponent];
-                    NSString *alternativePath = [importedIpaPath stringByAppendingPathComponent:fileName];
-                    
-                    if ([ZXFileManage fileExistWithPath:alternativePath]) {
-                        NSLog(@"[加载] 在ImportedIpa目录中找到文件: %@", alternativePath);
-                        ipaModel.localPath = alternativePath;
-                        fileExists = YES;
-                        
-                        // 更新数据库中的路径
-                        [ipaModel zx_dbSave];
-                    } else {
-                        // 尝试在ImportedIpa目录中查找任何IPA文件
-                        for (NSString *existingFileName in fileNameToPath.allKeys) {
-                            // 检查是否包含相同的bundleId或应用名称
-                            if ([existingFileName containsString:ipaModel.bundleId] || 
-                                [existingFileName containsString:ipaModel.title]) {
-                                NSLog(@"[加载] 找到类似文件: %@", existingFileName);
-                                NSString *similarPath = fileNameToPath[existingFileName];
-                                ipaModel.localPath = similarPath;
-                                fileExists = YES;
-                                
-                                // 更新数据库中的路径
-                                [ipaModel zx_dbSave];
-                                break;
-                            }
-                        }
-                    }
-                }
-                
-                if (fileExists) {
-                // 文件存在，添加到列表
-                NSLog(@"[加载] 文件存在，添加到列表");
-                    
-                    // 从缓存中获取文件大小
-                    NSString *fileSizeKey = [NSString stringWithFormat:@"fileSize_%@", ipaModel.sign];
-                    NSString *sizeStr = [[NSUserDefaults standardUserDefaults] objectForKey:fileSizeKey];
-                    
-                    if (!sizeStr) {
-                        // 如果缓存中没有，重新获取文件大小
-                NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:ipaModel.localPath error:nil];
-                if (attributes) {
-                    // 更新文件大小信息
-                    long long fileSize = [attributes fileSize];
-                            sizeStr = [self formatFileSize:fileSize];
-                            
-                            // 缓存文件大小
-                            [[NSUserDefaults standardUserDefaults] setObject:sizeStr forKey:fileSizeKey];
-                            [[NSUserDefaults standardUserDefaults] synchronize];
-                        }
-                    }
-                    
-                    // 在自定义属性中存储文件大小字符串
-                    objc_setAssociatedObject(ipaModel, "fileSize", sizeStr, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                
-                [self.ipaList addObject:ipaModel];
-            } else {
-                    NSLog(@"[加载] 文件不存在，但保留数据库记录以防文件在其他位置");
-                    // 不再立即删除数据库记录，而是保留记录
-                }
+                NSLog(@"[加载] 数据库记录指向的文件不存在，跳过: %@", model.localPath);
             }
         }
     }
     
-    // 检查是否有ImportedIpa目录中的文件没有对应的数据库记录
+    // 然后处理文件系统中的文件
     for (NSString *fileName in importedFiles) {
-            if ([fileName.pathExtension.lowercaseString isEqualToString:@"ipa"]) {
+        if ([fileName.pathExtension.lowercaseString isEqualToString:@"ipa"]) {
             NSString *fullPath = [importedIpaPath stringByAppendingPathComponent:fileName];
             
-            // 检查是否已经在列表中
-            BOOL found = NO;
-            for (ZXIpaModel *model in self.ipaList) {
-                if ([model.localPath isEqualToString:fullPath]) {
-                    found = YES;
-                        break;
-                    }
-                }
-                
-            if (!found) {
+            // 检查是否已有对应的数据库记录
+            if (![processedPaths containsObject:fullPath]) {
                 NSLog(@"[加载] 发现未记录的IPA文件: %@，尝试解析并添加", fileName);
                 
                 // 解析IPA文件
@@ -447,27 +323,38 @@
                     // 保存到数据库
                     [self saveIpaInfoToDatabase:newModel];
                     
-                    // 添加到列表
-                    [self.ipaList addObject:newModel];
+                    // 添加到映射
+                    [pathToModelDict setObject:newModel forKey:fullPath];
+                    [processedPaths addObject:fullPath];
                     NSLog(@"[加载] 成功添加未记录的IPA文件: %@", newModel.title);
                 }
             }
         }
     }
     
-        [self.tableView reloadData];
-        
-        // 如果没有IPA文件，显示提示
-        if (self.ipaList.count == 0) {
-            [self showEmptyView];
-        } else {
-            [self hideEmptyView];
+    // 最后从映射构建IPA列表，确保没有重复
+    for (NSString *path in pathToModelDict) {
+        ZXIpaModel *model = [pathToModelDict objectForKey:path];
+        if (model) {
+            [self.ipaList addObject:model];
+            NSLog(@"[加载] 添加IPA信息 - 行: %lu, 标题: %@, 本地路径: %@", (unsigned long)self.ipaList.count, model.title, model.localPath);
         }
+    }
+    
+    [self.tableView reloadData];
+    
+    // 如果没有IPA文件，显示提示
+    if (self.ipaList.count == 0) {
+        [self showEmptyView];
+    } else {
+        [self hideEmptyView];
+    }
 }
 
 #pragma mark - 解析IPA文件
 - (ZXIpaModel *)parseIpaFile:(NSString *)filePath {
     NSLog(@"[解析] 开始解析IPA文件: %@", filePath);
+    
     
     // 获取文件名和哈希值作为缓存键
     NSString *fileName = [filePath lastPathComponent];
@@ -1638,126 +1525,30 @@
 
 #pragma mark - 保存IPA信息到数据库
 - (void)saveIpaInfoToDatabase:(ZXIpaModel *)ipaModel {
-    if (!ipaModel) {
+    // 检查是否已经存在相同路径的IPA文件
+    NSArray *existingIpas = [ZXIpaModel zx_dbQuaryWhere:[NSString stringWithFormat:@"localPath = '%@'", ipaModel.localPath]];
+    
+    if (existingIpas.count > 0) {
+        NSLog(@"[保存] 数据库中已存在相同路径的记录，跳过保存: %@", ipaModel.localPath);
         return;
     }
     
-    NSLog(@"[保存] 开始保存IPA信息到数据库: %@", ipaModel.title);
-    
-    // 1. 检查是否已存在相同的IPA
-    NSArray *sameArr = [ZXIpaModel zx_dbQuaryWhere:[NSString stringWithFormat:@"bundleId='%@' AND version='%@'", ipaModel.bundleId, ipaModel.version]];
-    if (sameArr.count) {
-        // 如果已存在，则删除旧记录
-        NSLog(@"[保存] 数据库中已存在相同Bundle ID和版本的记录，删除旧记录: %@", ipaModel.bundleId);
-        [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"bundleId='%@' AND version='%@'", ipaModel.bundleId, ipaModel.version]];
-    }
-    
-    // 2. 确保时间字段有值
-    NSDate *date = [NSDate date];
-    NSDateFormatter *format = [[NSDateFormatter alloc] init];
-    [format setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
-    
-    // 如果时间未设置，则使用当前时间
-    if (!ipaModel.time || [ipaModel.time isEqualToString:@"未知日期"]) {
-        ipaModel.time = [format stringFromDate:date];
-    }
-    
-    // 3. 检查localPath是否指向ImportedIpa目录
-    NSString *filePath = ipaModel.localPath;
-    NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    NSString *importedIpaPath = [documentsPath stringByAppendingPathComponent:@"ImportedIpa"];
-    
-    // 确保ImportedIpa目录存在
-    if (![ZXFileManage fileExistWithPath:importedIpaPath]) {
-        [ZXFileManage creatDirWithPath:importedIpaPath];
-        NSLog(@"[保存] 创建ImportedIpa目录");
-    }
-    
-    // 如果是本地导入的文件，确保localPath使用ImportedIpa目录中的路径
-    if ([filePath hasPrefix:importedIpaPath]) {
-        NSLog(@"[保存] 文件已在ImportedIpa目录中: %@", filePath);
-    } else {
-        // 检查文件是否已复制到ImportedIpa目录
-        NSString *fileName = [filePath lastPathComponent];
-        NSString *importedFilePath = [importedIpaPath stringByAppendingPathComponent:fileName];
+    // 检查是否已经存在相同Bundle ID和版本的IPA文件
+    if (ipaModel.bundleId && ipaModel.version) {
+        NSArray *sameVersionIpas = [ZXIpaModel zx_dbQuaryWhere:[NSString stringWithFormat:@"bundleId = '%@' AND version = '%@'", ipaModel.bundleId, ipaModel.version]];
         
-        if ([ZXFileManage fileExistWithPath:importedFilePath]) {
-            NSLog(@"[保存] 文件已在ImportedIpa目录中，更新localPath: %@", importedFilePath);
-            ipaModel.localPath = importedFilePath;
-        } else {
-            // 检查文件是否存在于原始路径
-            if ([ZXFileManage fileExistWithPath:filePath]) {
-                NSLog(@"[保存] 文件存在于原始路径，尝试复制到ImportedIpa目录: %@", filePath);
-                
-                // 尝试复制文件到ImportedIpa目录
-                NSError *copyError = nil;
-                if ([[NSFileManager defaultManager] copyItemAtPath:filePath toPath:importedFilePath error:&copyError]) {
-                    NSLog(@"[保存] 成功复制文件到ImportedIpa目录: %@", importedFilePath);
-                    ipaModel.localPath = importedFilePath;
-                } else {
-                    NSLog(@"[保存] 复制文件失败: %@", copyError.localizedDescription);
-                    // 如果复制失败，继续使用原始路径
-                }
-            } else {
-                NSLog(@"[保存] 警告: 文件不存在于原始路径，尝试查找替代路径");
-                
-                // 尝试在ImportedIpa目录中查找同名文件
-                NSFileManager *fileManager = [NSFileManager defaultManager];
-                NSError *error = nil;
-                NSArray *files = [fileManager contentsOfDirectoryAtPath:importedIpaPath error:&error];
-                
-                if (!error) {
-                    for (NSString *file in files) {
-                        if ([file.pathExtension.lowercaseString isEqualToString:@"ipa"]) {
-                            NSString *possiblePath = [importedIpaPath stringByAppendingPathComponent:file];
-                            NSLog(@"[保存] 找到可能的IPA文件: %@", possiblePath);
-                            ipaModel.localPath = possiblePath;
-                            break;
-                        }
-                    }
-                }
-            }
+        if (sameVersionIpas.count > 0) {
+            // 记录日志但仍然继续保存，因为可能是用户有意更新
+            NSLog(@"[保存] 警告: 已存在相同Bundle ID和版本的记录: %@(%@)", ipaModel.bundleId, ipaModel.version);
         }
     }
     
-    // 确保localPath是绝对路径
-    if (![ipaModel.localPath hasPrefix:@"/"]) {
-        NSLog(@"[保存] 警告: localPath不是绝对路径，尝试修复");
-        if ([ipaModel.localPath hasPrefix:@"~"]) {
-            // 替换波浪号为用户目录
-            NSString *homePath = NSHomeDirectory();
-            ipaModel.localPath = [ipaModel.localPath stringByReplacingCharactersInRange:NSMakeRange(0, 1) withString:homePath];
-        } else {
-            // 假设是相对于Documents目录的路径
-            ipaModel.localPath = [documentsPath stringByAppendingPathComponent:ipaModel.localPath];
-        }
-        NSLog(@"[保存] 修复后的路径: %@", ipaModel.localPath);
-    }
-    
-    // 4. 生成唯一标识
-    if (!ipaModel.sign) {
-        NSString *orgSign = [NSString stringWithFormat:@"%@_%@_%@", 
-                              ipaModel.bundleId, 
-                              ipaModel.version, 
-                              [self currentTimeString]];
-        ipaModel.sign = [orgSign md5Str];
-        NSLog(@"[保存] 生成唯一标识: %@", ipaModel.sign);
-    }
-    
-    // 5. 检查是否有图标路径
-    if (ipaModel.iconUrl) {
-        NSLog(@"[保存] 保存图标路径到数据库: %@", ipaModel.iconUrl);
+    // 保存到数据库
+    BOOL result = [ipaModel zx_dbSave];
+    if (result) {
+        NSLog(@"[保存] IPA信息已成功保存到数据库: %@", ipaModel.title);
     } else {
-        NSLog(@"[保存] 没有找到图标路径");
-    }
-    
-    // 6. 将IPA信息保存到数据库
-    BOOL saveResult = [ipaModel zx_dbSave];
-    
-    if (saveResult) {
-        NSLog(@"[保存] 成功保存IPA信息到数据库");
-    } else {
-        NSLog(@"[保存] 保存IPA信息到数据库失败");
+        NSLog(@"[保存] 保存IPA信息到数据库失败: %@", ipaModel.title);
     }
 }
 
@@ -2824,6 +2615,29 @@
 
 // 递归查找所有IPA文件
 - (void)findAllIpaFilesInDirectory:(NSString *)directory toArray:(NSMutableArray *)result {
+    [self findAllIpaFilesInDirectory:directory toArray:result depth:0 visitedPaths:nil];
+}
+
+// 带有深度限制和路径缓存的递归查找
+- (void)findAllIpaFilesInDirectory:(NSString *)directory toArray:(NSMutableArray *)result depth:(int)depth visitedPaths:(NSMutableSet *)visitedPaths {
+    // 限制递归深度，避免无限递归
+    if (depth > 5) {
+        NSLog(@"[签名流程] 达到最大递归深度，停止搜索: %@", directory);
+        return;
+    }
+    
+    // 路径去重，避免循环引用
+    if (!visitedPaths) {
+        visitedPaths = [NSMutableSet set];
+    }
+    
+    if ([visitedPaths containsObject:directory]) {
+        NSLog(@"[签名流程] 检测到重复路径，跳过: %@", directory);
+        return;
+    }
+    
+    [visitedPaths addObject:directory];
+    
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSError *error = nil;
     NSArray *contents = [fileManager contentsOfDirectoryAtPath:directory error:&error];
@@ -2844,12 +2658,15 @@
         if ([fileManager fileExistsAtPath:fullPath isDirectory:&isDirectory]) {
             if (isDirectory) {
                 // 递归遍历子目录
-                [self findAllIpaFilesInDirectory:fullPath toArray:result];
+                [self findAllIpaFilesInDirectory:fullPath toArray:result depth:depth+1 visitedPaths:visitedPaths];
             } else {
                 // 检查是否是IPA文件
                 if ([[item pathExtension] isEqualToString:@"ipa"]) {
-                    NSLog(@"[签名流程] 找到IPA文件: %@", fullPath);
-                    [result addObject:fullPath];
+                    // 检查是否已经添加了这个路径
+                    if (![result containsObject:fullPath]) {
+                        NSLog(@"[签名流程] 找到IPA文件: %@", fullPath);
+                        [result addObject:fullPath];
+                    }
                 }
             }
         }
@@ -3324,6 +3141,17 @@
 - (void)recoverMissingIpaFiles {
     NSLog(@"[恢复] 开始检查并恢复可能丢失的IPA文件");
     
+    // 确保使用正确的用户默认设置域
+    [[NSUserDefaults standardUserDefaults] addSuiteNamed:@"cn.zxlee.IpaDownloadTool"];
+    
+    // 限制恢复尝试次数，防止无限循环
+    static int recoveryAttempts = 0;
+    if (recoveryAttempts >= 3) {
+        NSLog(@"[恢复] 已达到最大恢复尝试次数（3次），退出恢复过程");
+        return;
+    }
+    recoveryAttempts++;
+    
     // 获取Documents目录
     NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     NSString *importedIpaPath = [documentsPath stringByAppendingPathComponent:@"ImportedIpa"];
@@ -3352,11 +3180,22 @@
     NSMutableDictionary *fileNameToPath = [NSMutableDictionary dictionary];
     NSMutableDictionary *bundleIdToPath = [NSMutableDictionary dictionary]; // 新增：bundleId到路径的映射
     
+    // 限制每个文件的解析次数，防止重复解析同一文件
+    NSMutableSet *parsedFiles = [NSMutableSet set];
+    
     // 解析所有IPA文件，获取bundleId信息
     for (NSString *fileName in existingFiles) {
         if ([fileName.pathExtension.lowercaseString isEqualToString:@"ipa"]) {
             NSString *fullPath = [importedIpaPath stringByAppendingPathComponent:fileName];
             fileNameToPath[fileName] = fullPath;
+            
+            // 检查是否已经解析过这个文件
+            if ([parsedFiles containsObject:fullPath]) {
+                continue;
+            }
+            
+            // 添加到已解析集合
+            [parsedFiles addObject:fullPath];
             
             // 尝试解析IPA获取bundleId
             ZXIpaModel *tempModel = [self parseIpaFile:fullPath];
@@ -3397,43 +3236,49 @@
                 continue;
             }
             
-            // 3. 最后尝试在ImportedIpa目录中查找类似名称的文件
-            for (NSString *existingFileName in fileNameToPath.allKeys) {
-                // 检查是否包含相同的bundleId或应用名称
-                if ([existingFileName containsString:ipaModel.bundleId] || 
-                    [existingFileName containsString:ipaModel.title] ||
-                    [ipaModel.title containsString:existingFileName]) {
-                    NSLog(@"[恢复] 找到类似文件: %@", existingFileName);
-                    NSString *similarPath = fileNameToPath[existingFileName];
-                    ipaModel.localPath = similarPath;
-                    [ipaModel zx_dbSave];
-                    recoveredCount++;
-                    break;
-                }
-            }
+            // 3. 删除无法恢复的记录
+            NSLog(@"[恢复] 无法恢复文件，从数据库中删除记录: %@", ipaModel.localPath);
+            [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"sign='%@'", ipaModel.sign]];
         }
     }
     
     // 检查是否有ImportedIpa目录中的文件没有对应的数据库记录
+    // 使用NSSet加速查找过程
+    NSMutableSet *existingModelPaths = [NSMutableSet set];
+    for (ZXIpaModel *model in dbIpaModels) {
+        [existingModelPaths addObject:model.localPath];
+    }
+    
     int addedCount = 0;
     for (NSString *fileName in existingFiles) {
         if ([fileName.pathExtension.lowercaseString isEqualToString:@"ipa"]) {
             NSString *fullPath = [importedIpaPath stringByAppendingPathComponent:fileName];
             
             // 检查是否已经在数据库中
-            BOOL found = NO;
-            for (ZXIpaModel *model in dbIpaModels) {
-                if ([model.localPath isEqualToString:fullPath]) {
-                    found = YES;
-                    break;
-                }
-            }
-            
-            if (!found) {
+            if (![existingModelPaths containsObject:fullPath]) {
                 NSLog(@"[恢复] 发现未记录的IPA文件: %@，尝试解析并添加", fileName);
                 
-                // 解析IPA文件
-                ZXIpaModel *newModel = [self parseIpaFile:fullPath];
+                // 解析IPA文件（只解析一次）
+                ZXIpaModel *newModel = nil;
+                if ([parsedFiles containsObject:fullPath]) {
+                    // 如果已经解析过，从当前已知信息重新构建模型
+                    for (NSString *bundleId in bundleIdToPath) {
+                        if ([bundleIdToPath[bundleId] isEqualToString:fullPath]) {
+                            newModel = [[ZXIpaModel alloc] init];
+                            newModel.bundleId = bundleId;
+                            newModel.localPath = fullPath;
+                            newModel.title = [fileName stringByDeletingPathExtension];
+                            newModel.version = @"1.0"; // 默认版本
+                            newModel.time = [self currentTimeString];
+                            break;
+                        }
+                    }
+                } else {
+                    // 如果还没解析过，解析一次
+                    [parsedFiles addObject:fullPath];
+                    newModel = [self parseIpaFile:fullPath];
+                }
+                
                 if (newModel) {
                     // 设置本地路径
                     newModel.localPath = fullPath;
@@ -3446,8 +3291,8 @@
                     // 生成唯一标识
                     if (!newModel.sign) {
                         NSString *orgSign = [NSString stringWithFormat:@"%@_%@_%@", 
-                                            newModel.bundleId, 
-                                            newModel.version, 
+                                            newModel.bundleId ?: @"unknown", 
+                                            newModel.version ?: @"1.0", 
                                             [self currentTimeString]];
                         newModel.sign = [orgSign md5Str];
                     }
@@ -3461,6 +3306,11 @@
     }
     
     NSLog(@"[恢复] 恢复完成，共恢复%d个文件，新增%d个文件", recoveredCount, addedCount);
+    
+    // 如果没有任何变化，重置恢复尝试计数
+    if (recoveredCount == 0 && addedCount == 0) {
+        recoveryAttempts = 0;
+    }
 }
 
 // 修改从plist文件中提取IPA下载链接的方法
@@ -3574,36 +3424,46 @@
         return;
     }
     
-    // 复制IPA文件到导入目录
-    NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    NSString *importPath = [documentsPath stringByAppendingPathComponent:@"ImportedIpa"];
-    
-    // 确保导入目录存在
-    if (![[NSFileManager defaultManager] fileExistsAtPath:importPath]) {
-        NSError *createDirError = nil;
-        [[NSFileManager defaultManager] createDirectoryAtPath:importPath withIntermediateDirectories:YES attributes:nil error:&createDirError];
-        
-        if (createDirError) {
-            NSLog(@"[导入] 创建ImportedIpa目录失败: %@", createDirError.localizedDescription);
-            [ALToastView showToastWithText:@"创建导入目录失败"];
+    // 检查是否已经存在于当前列表
+    for (ZXIpaModel *existingModel in self.ipaList) {
+        if ([existingModel.localPath isEqualToString:ipaModel.localPath]) {
+            NSLog(@"[导入] IPA已存在于列表中，跳过导入: %@", ipaModel.localPath);
+            [ALToastView showToastWithText:@"该IPA文件已在列表中"];
+            
+            // 定位到该IPA所在的行
+            NSInteger index = [self.ipaList indexOfObject:existingModel];
+            if (index != NSNotFound) {
+                NSIndexPath *indexPath = [NSIndexPath indexPathForRow:index inSection:0];
+                [self.tableView scrollToRowAtIndexPath:indexPath atScrollPosition:UITableViewScrollPositionMiddle animated:YES];
+                
+                // 高亮显示
+                [self.tableView selectRowAtIndexPath:indexPath animated:YES scrollPosition:UITableViewScrollPositionNone];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [self.tableView deselectRowAtIndexPath:indexPath animated:YES];
+                });
+            }
+            
             return;
         }
     }
     
-    // 生成新的文件名
+    // 创建导入后的文件路径
     NSString *fileName = [ipaModel.localPath lastPathComponent];
-    NSString *newPath = [importPath stringByAppendingPathComponent:fileName];
+    NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *importedIpaPath = [documentsPath stringByAppendingPathComponent:@"ImportedIpa"];
+    NSString *newPath = [importedIpaPath stringByAppendingPathComponent:fileName];
     
-    // 如果目标文件已存在，先删除
-    if ([[NSFileManager defaultManager] fileExistsAtPath:newPath]) {
-        NSError *removeError = nil;
-        [[NSFileManager defaultManager] removeItemAtPath:newPath error:&removeError];
+    // 如果源文件和目标路径相同，则不需要复制
+    if ([ipaModel.localPath isEqualToString:newPath]) {
+        NSLog(@"[导入] 源文件已在ImportedIpa目录中，无需复制: %@", newPath);
         
-        if (removeError) {
-            NSLog(@"[导入] 删除已存在的文件失败: %@", removeError.localizedDescription);
-            [ALToastView showToastWithText:@"导入失败，无法覆盖已存在的文件"];
-            return;
-        }
+        // 直接添加到列表
+        [self.ipaList addObject:ipaModel];
+        [self.tableView reloadData];
+        [self hideEmptyView];
+        
+        [ALToastView showToastWithText:@"IPA已添加到列表"];
+        return;
     }
     
     // 复制文件
@@ -3628,6 +3488,9 @@
     // 生成唯一标识
     NSString *uniqueString = [NSString stringWithFormat:@"%@_%@_imported_%@", newIpaModel.bundleId, newIpaModel.version, [self currentTimeString]];
     newIpaModel.sign = [uniqueString md5Str];
+    
+    // 保存到数据库
+    [self saveIpaInfoToDatabase:newIpaModel];
     
     // 添加到列表并刷新UI
     if (!self.ipaList) {

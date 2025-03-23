@@ -95,6 +95,9 @@ typedef enum {
 -(void)setTbData{
     if(!self.tableView)return;
     
+    // 确保使用正确的用户默认设置域
+    [[NSUserDefaults standardUserDefaults] addSuiteNamed:@"cn.zxlee.IpaDownloadTool"];
+    
     NSMutableArray *allData = [[ZXIpaModel zx_dbQuaryWhere:self.sort == SortFileNameAsc ? @"1 = 1 order by title asc" : @"1 = 1 order by time desc"] mutableCopy];
     self.tableView.zxDatas = allData;
     

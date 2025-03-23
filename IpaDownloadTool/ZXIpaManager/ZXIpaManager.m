@@ -72,6 +72,9 @@
 - (NSArray<ZXIpaModel *> *)allSignedIpas {
     NSLog(@"[IpaManager] 获取所有已签名IPA");
     
+    // 使用固定的suite名称，而不是使用bundle identifier
+    [[NSUserDefaults standardUserDefaults] addSuiteNamed:@"IpaDownloadToolUserDefaults"];
+    
     // 查询所有已签名的IPA
     NSArray<ZXIpaModel *> *signedIpas = [ZXIpaModel zx_dbQuaryWhere:@"isSigned = 1"];
     
@@ -126,17 +129,24 @@
     
     // 过滤掉文件不存在的IPA
     NSMutableArray<ZXIpaModel *> *validIpas = [NSMutableArray array];
+    NSMutableSet<NSString *> *processedPaths = [NSMutableSet set]; // 用于跟踪已处理的文件路径
     
     for (ZXIpaModel *ipa in signedIpas) {
         NSLog(@"[IpaManager] 检查IPA文件: %@, 路径: %@, isSigned: %d", ipa.title, ipa.localPath, ipa.isSigned);
         
-        if (ipa.localPath && [[NSFileManager defaultManager] fileExistsAtPath:ipa.localPath]) {
-            [validIpas addObject:ipa];
-            NSLog(@"[IpaManager] 文件存在，添加到有效列表: %@", ipa.localPath);
+        // 检查是否已处理过这个路径
+        if (ipa.localPath && ![processedPaths containsObject:ipa.localPath]) {
+            if ([[NSFileManager defaultManager] fileExistsAtPath:ipa.localPath]) {
+                [validIpas addObject:ipa];
+                [processedPaths addObject:ipa.localPath]; // 记录已处理的路径
+                NSLog(@"[IpaManager] 文件存在，添加到有效列表: %@", ipa.localPath);
+            } else {
+                NSLog(@"[IpaManager] 警告: IPA文件不存在，将从列表中移除: %@", ipa.localPath);
+                // 从数据库中删除不存在的文件记录
+                [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"sign='%@'", ipa.sign]];
+            }
         } else {
-            NSLog(@"[IpaManager] 警告: IPA文件不存在，将从列表中移除: %@", ipa.localPath);
-            // 从数据库中删除不存在的文件记录
-            [ZXIpaModel zx_dbDropWhere:[NSString stringWithFormat:@"sign='%@'", ipa.sign]];
+            NSLog(@"[IpaManager] 警告: 跳过重复的IPA路径: %@", ipa.localPath);
         }
     }
     
